@@ -8,8 +8,9 @@ import redis
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
-DB_ERROR_STR = "DB error"
+from order.app import send_get_request, GATEWAY_URL
 
+DB_ERROR_STR = "DB error"
 
 app = Flask("payment-service")
 
@@ -66,6 +67,26 @@ def batch_init_users(n: int, starting_money: int):
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return jsonify({"msg": "Batch init for users successful"})
+
+
+@app.post('/cancel/{user_id}/{order_id}')
+def cancel(user_id: str, order_id: str):
+    app.logger.debug(f"Cancelling order {order_id} of user {user_id}")
+    user_entry: UserValue = get_user_from_db(user_id)
+    order_reply = send_get_request(f"{GATEWAY_URL}/order/find/{order_id}")
+    if order_reply.status_code != 200:
+        # Request failed because item does not exist
+        abort(400, f"Order: {order_id} does not exist!")
+    if order_reply.json["user_id"] != user_id:
+        abort(400, f"Order: {order_id} does not belong to user: {user_id}")
+    return Response(f"Order: {order_id} of user: {user_id} is cancelled", status=200)
+    # TODO: implement endpoint and think about logic of rollback
+
+
+@app.get('/status/{user_id}/{order_id}')
+def status(user_id: str, order_id: str):
+    # TODO: implement endpoint
+    return True
 
 
 @app.get('/find_user/<user_id>')
