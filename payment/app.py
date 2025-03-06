@@ -8,7 +8,7 @@ import redis
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
-from order.app import send_get_request, GATEWAY_URL
+from order.app import send_get_request, GATEWAY_URL, OrderValue, get_order_from_db, send_post_request
 
 DB_ERROR_STR = "DB error"
 
@@ -71,7 +71,7 @@ def batch_init_users(n: int, starting_money: int):
 
 @app.post('/cancel/{user_id}/{order_id}')
 def cancel(user_id: str, order_id: str):
-    app.logger.debug(f"Cancelling order {order_id} of user {user_id}")
+    app.logger.debug(f"Cancelling payment of order {order_id} of user {user_id}")
     user_entry: UserValue = get_user_from_db(user_id)
     order_reply = send_get_request(f"{GATEWAY_URL}/order/find/{order_id}")
     if order_reply.status_code != 200:
@@ -79,14 +79,24 @@ def cancel(user_id: str, order_id: str):
         abort(400, f"Order: {order_id} does not exist!")
     if order_reply.json["user_id"] != user_id:
         abort(400, f"Order: {order_id} does not belong to user: {user_id}")
-    return Response(f"Order: {order_id} of user: {user_id} is cancelled", status=200)
-    # TODO: implement endpoint and think about logic of rollback
+    if order_reply.json["paid"]:
+        rollback_cost = order_reply.json["total_cost"]
+        pay_reply = send_post_request(f"{GATEWAY_URL}/add_funds/{user_id}/{rollback_cost}")
+        if pay_reply.status_code != 200:
+            # Request failed because item does not exist
+            abort(400, f"User: {user_id} does not exist!")
+    else:
+        # TODO: think about what can be used to verify cancelled payment if money wasn't deducted yet (e.g. use logger in some way)
+        return Response(f"Payment of order: {order_id} of user: {user_id} was not paid yet, but is cancelled", status=200)
+    return Response(f"Payment of order: {order_id} of user: {user_id} is rolled back", status=200)
 
 
 @app.get('/status/{user_id}/{order_id}')
 def status(user_id: str, order_id: str):
-    # TODO: implement endpoint
-    return True
+    app.logger.debug(f"Checking status of order {order_id} of user {user_id}")
+    user_entry: UserValue = get_user_from_db(user_id)
+    order_reply: OrderValue = get_order_from_db(order_id)
+    return order_reply.paid
 
 
 @app.get('/find_user/<user_id>')
