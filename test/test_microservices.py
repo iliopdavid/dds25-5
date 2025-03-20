@@ -74,6 +74,9 @@ class TestMicroservices(unittest.TestCase):
         credit_after_payment: int = tu.find_user(user_id)['credit']
         self.assertEqual(credit_after_payment, 5)
 
+        #payment_response = tu.payment_status(order_id, user_id)
+        #self.assertTrue(tu.status_code_is_success(payment_response))
+
     def test_order(self):
         # Test /payment/pay/<user_id>/<order_id>
         user: dict = tu.create_user()

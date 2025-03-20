@@ -4,13 +4,13 @@ import atexit
 import uuid
 
 import redis
+import requests
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
-from order.app import send_get_request, GATEWAY_URL, OrderValue, get_order_from_db, send_post_request
-
 DB_ERROR_STR = "DB error"
+REQ_ERROR_STR = "Requests error"
 
 app = Flask("payment-service")
 
@@ -29,7 +29,24 @@ atexit.register(close_db_connection)
 
 class UserValue(Struct):
     credit: int
+    paid: list
 
+def send_post_request(url: str):
+    try:
+        response = requests.post(url)
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        return response
+
+
+def send_get_request(url: str):
+    try:
+        response = requests.get(url)
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        return response
 
 def get_user_from_db(user_id: str) -> UserValue | None:
     try:
@@ -48,7 +65,7 @@ def get_user_from_db(user_id: str) -> UserValue | None:
 @app.post('/create_user')
 def create_user():
     key = str(uuid.uuid4())
-    value = msgpack.encode(UserValue(credit=0))
+    value = msgpack.encode(UserValue(credit=0, paid=[]))
     try:
         db.set(key, value)
     except redis.exceptions.RedisError:
@@ -69,22 +86,13 @@ def batch_init_users(n: int, starting_money: int):
     return jsonify({"msg": "Batch init for users successful"})
 
 
-@app.post('/cancel/{user_id}/{order_id}')
-def cancel(user_id: str, order_id: str):
+@app.post('/cancel/{user_id}/{order_id}/{paid}/{totalcost}')
+def cancel(user_id: str, order_id: str, paid: bool, totalcost: int):
     app.logger.debug(f"Cancelling payment of order {order_id} of user {user_id}")
-    user_entry: UserValue = get_user_from_db(user_id)
-    order_reply = send_get_request(f"{GATEWAY_URL}/order/find/{order_id}")
-    if order_reply.status_code != 200:
-        # Request failed because item does not exist
-        abort(400, f"Order: {order_id} does not exist!")
-    if order_reply.json["user_id"] != user_id:
-        abort(400, f"Order: {order_id} does not belong to user: {user_id}")
-    if order_reply.json["paid"]:
-        rollback_cost = order_reply.json["total_cost"]
-        pay_reply = send_post_request(f"{GATEWAY_URL}/add_funds/{user_id}/{rollback_cost}")
-        if pay_reply.status_code != 200:
-            # Request failed because item does not exist
-            abort(400, f"User: {user_id} does not exist!")
+    user_reply = get_user_from_db(user_id)
+    user_reply.paid.remove(order_id)
+    if order_id in user_reply.paid:
+        pay_reply = add_credit(user_id, totalcost)
     else:
         # TODO: think about what can be used to verify cancelled payment if money wasn't deducted yet (e.g. use logger in some way)
         return Response(f"Payment of order: {order_id} of user: {user_id} was not paid yet, but is cancelled", status=200)
@@ -95,8 +103,10 @@ def cancel(user_id: str, order_id: str):
 def status(user_id: str, order_id: str):
     app.logger.debug(f"Checking status of order {order_id} of user {user_id}")
     user_entry: UserValue = get_user_from_db(user_id)
-    order_reply: OrderValue = get_order_from_db(order_id)
-    return order_reply.paid
+    if order_id in user_entry.paid:
+        return Response(f"Order is paid", status = 200)
+    else:
+        return Response(f"Order is not paid yet", status=400)
 
 
 @app.get('/find_user/<user_id>')
