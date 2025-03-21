@@ -3,7 +3,6 @@ import os
 import atexit
 import random
 import uuid
-from collections import defaultdict
 
 import redis
 import requests
@@ -33,7 +32,7 @@ atexit.register(close_db_connection)
 
 class OrderValue(Struct):
     paid: bool
-    items: list[tuple[str, int]]
+    items: dict[str, int]
     user_id: str
     total_cost: int
 
@@ -55,7 +54,7 @@ def get_order_from_db(order_id: str) -> OrderValue | None:
 @app.post('/create/<user_id>')
 def create_order(user_id: str):
     key = str(uuid.uuid4())
-    value = msgpack.encode(OrderValue(paid=False, items=[], user_id=user_id, total_cost=0))
+    value = msgpack.encode(OrderValue(paid=False, items={}, user_id=user_id, total_cost=0))
     try:
         db.set(key, value)
     except redis.exceptions.RedisError:
@@ -75,7 +74,7 @@ def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
         item1_id = random.randint(0, n_items - 1)
         item2_id = random.randint(0, n_items - 1)
         value = OrderValue(paid=False,
-                           items=[(f"{item1_id}", 1), (f"{item2_id}", 1)],
+                           items={f"{item1_id}": 1, f"{item2_id}": 1},
                            user_id=f"{user_id}",
                            total_cost=2 * item_price)
         return value
@@ -96,7 +95,7 @@ def find_order(order_id: str):
         {
             "order_id": order_id,
             "paid": order_entry.paid,
-            "items": order_entry.items,
+            "items": list(order_entry.items.keys()),
             "user_id": order_entry.user_id,
             "total_cost": order_entry.total_cost
         }
@@ -129,7 +128,10 @@ def add_item(order_id: str, item_id: str, quantity: int):
         # Request failed because item does not exist
         abort(400, f"Item: {item_id} does not exist!")
     item_json: dict = item_reply.json()
-    order_entry.items.append((item_id, int(quantity)))
+    if item_id in order_entry.items:
+        order_entry.items[item_id] += int(quantity)
+    else:
+        order_entry.items[item_id] = int(quantity)
     order_entry.total_cost += int(quantity) * item_json["price"]
     try:
         db.set(order_id, msgpack.encode(order_entry))
@@ -139,56 +141,25 @@ def add_item(order_id: str, item_id: str, quantity: int):
                     status=200)
 
 
-def rollback_stock(removed_items: list[tuple[str, int]]):
-    for item_id, quantity in removed_items:
+def rollback_stock(removed_items: dict[str, int]):
+    for item_id, quantity in removed_items.items():
         send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
-
-
-@app.delete('/removeItem/{order_id}/{item_id}')
-def remove(order_id: str, item_id: str):
-    app.logger.debug(f"Removing item {item_id} from order {order_id}")
-    order_entry: OrderValue = get_order_from_db(order_id)
-
-    item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
-    if item_reply.status_code != 200:
-        # Request failed because item does not exist
-        abort(400, f"Item: {item_id} does not exist!")
-    removed = False
-    for i in range(len(order_entry.items)):
-        if order_entry.items[i][0] == item_reply:
-            del order_entry.items[i]
-            removed = True
-    if not removed:
-        abort(400, f"Item: {item_id} was not present in order {order_id}")
-    try:
-        db.set(order_id, msgpack.encode(order_entry))
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    payment_response = send_post_request(f"{GATEWAY_URL}/payment/cancel/{order_entry.user_id}/{order_id}/{order_entry.paid}")
-    if payment_response.status_code != 200:
-        return abort(400, "Payment error")
-    return Response(f"Item: {item_id} is removed from order: {order_id}",
-                    status=200)
 
 
 @app.post('/checkout/<order_id>')
 def checkout(order_id: str):
     app.logger.debug(f"Checking out {order_id}")
     order_entry: OrderValue = get_order_from_db(order_id)
-    # get the quantity per item
-    items_quantities: dict[str, int] = defaultdict(int)
-    for item_id, quantity in order_entry.items:
-        items_quantities[item_id] += quantity
     # The removed items will contain the items that we already have successfully subtracted stock from
     # for rollback purposes.
-    removed_items: list[tuple[str, int]] = []
-    for item_id, quantity in items_quantities.items():
+    removed_items: dict[str, int] = {}
+    for item_id, quantity in order_entry.items.items():
         stock_reply = send_post_request(f"{GATEWAY_URL}/stock/subtract/{item_id}/{quantity}")
         if stock_reply.status_code != 200:
             # If one item does not have enough stock we need to rollback
             rollback_stock(removed_items)
             abort(400, f'Out of stock on item_id: {item_id}')
-        removed_items.append((item_id, quantity))
+        removed_items[item_id] = quantity
     user_reply = send_post_request(f"{GATEWAY_URL}/payment/pay/{order_entry.user_id}/{order_entry.total_cost}")
     if user_reply.status_code != 200:
         # If the user does not have enough credit we need to rollback all the item stock subtractions
