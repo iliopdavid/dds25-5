@@ -33,14 +33,6 @@ def create_user() -> dict:
     return requests.post(f"{PAYMENT_URL}/payment/create_user").json()
 
 
-def cancel_payment(order_id: str, user_id: str, paid: bool, totalcost: int) -> int:
-    return requests.post(f"{PAYMENT_URL}/payment/cancel/{user_id}/{order_id}/{paid}/{totalcost}").status_code
-
-
-def payment_status(order_id: str, user_id: str) -> int:
-    return requests.get(f"{PAYMENT_URL}/payment/status/{user_id}/{order_id}").status_code
-
-
 def find_user(user_id: str) -> dict:
     return requests.get(f"{PAYMENT_URL}/payment/find_user/{user_id}").json()
 
@@ -58,10 +50,6 @@ def create_order(user_id: str) -> dict:
 
 def add_item_to_order(order_id: str, item_id: str, quantity: int) -> int:
     return requests.post(f"{ORDER_URL}/orders/addItem/{order_id}/{item_id}/{quantity}").status_code
-
-
-def remove_order(order_id: str, item_id: str) -> int:
-    return requests.delete(f"{ORDER_URL}/orders/removeItem/{order_id}/{item_id}").status_code
 
 
 def find_order(order_id: str) -> dict:

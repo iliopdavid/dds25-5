@@ -29,7 +29,6 @@ atexit.register(close_db_connection)
 
 class UserValue(Struct):
     credit: int
-    paid: list
 
 def send_post_request(url: str):
     try:
@@ -65,7 +64,7 @@ def get_user_from_db(user_id: str) -> UserValue | None:
 @app.post('/create_user')
 def create_user():
     key = str(uuid.uuid4())
-    value = msgpack.encode(UserValue(credit=0, paid=[]))
+    value = msgpack.encode(UserValue(credit=0))
     try:
         db.set(key, value)
     except redis.exceptions.RedisError:
@@ -84,29 +83,6 @@ def batch_init_users(n: int, starting_money: int):
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return jsonify({"msg": "Batch init for users successful"})
-
-
-@app.post('/cancel/{user_id}/{order_id}/{paid}/{totalcost}')
-def cancel(user_id: str, order_id: str, paid: bool, totalcost: int):
-    app.logger.debug(f"Cancelling payment of order {order_id} of user {user_id}")
-    user_reply = get_user_from_db(user_id)
-    user_reply.paid.remove(order_id)
-    if order_id in user_reply.paid:
-        pay_reply = add_credit(user_id, totalcost)
-    else:
-        # TODO: think about what can be used to verify cancelled payment if money wasn't deducted yet (e.g. use logger in some way)
-        return Response(f"Payment of order: {order_id} of user: {user_id} was not paid yet, but is cancelled", status=200)
-    return Response(f"Payment of order: {order_id} of user: {user_id} is rolled back", status=200)
-
-
-@app.get('/status/{user_id}/{order_id}')
-def status(user_id: str, order_id: str):
-    app.logger.debug(f"Checking status of order {order_id} of user {user_id}")
-    user_entry: UserValue = get_user_from_db(user_id)
-    if order_id in user_entry.paid:
-        return Response(f"Order is paid", status = 200)
-    else:
-        return Response(f"Order is not paid yet", status=400)
 
 
 @app.get('/find_user/<user_id>')
