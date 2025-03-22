@@ -33,7 +33,6 @@ def on_start():
                 pass
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
-            app.logger.debug(f"Log file already exists at: {LOG_PATH}")
             return abort(400, DB_ERROR_STR)
 
 
