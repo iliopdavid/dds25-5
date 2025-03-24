@@ -41,6 +41,7 @@ def on_start():
         except FileExistsError:
             return abort(400, DB_ERROR_STR)
 
+
 app = Flask("order-service")
 
 db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],

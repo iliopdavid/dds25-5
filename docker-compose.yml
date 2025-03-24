@@ -47,6 +47,8 @@ services:
   payment-service:
     build: ./payment
     image: user:latest
+    volumes:
+      - ./logging:/home/flask-app/logging
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - env/payment_redis.env
