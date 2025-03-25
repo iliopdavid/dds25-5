@@ -5,11 +5,13 @@ import atexit
 import uuid
 
 import redis
+import requests
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 
 DB_ERROR_STR = "DB error"
+REQ_ERROR_STR = "Requests error"
 
 LOG_DIR = "logging"
 LOG_FILENAME = "payment_log.txt"
@@ -53,6 +55,22 @@ atexit.register(close_db_connection)
 class UserValue(Struct):
     credit: int
 
+def send_post_request(url: str):
+    try:
+        response = requests.post(url)
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        return response
+
+
+def send_get_request(url: str):
+    try:
+        response = requests.get(url)
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        return response
 
 def get_user_from_db(user_id: str) -> UserValue | None:
     try:
