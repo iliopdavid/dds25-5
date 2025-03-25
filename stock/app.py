@@ -43,9 +43,6 @@ db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
                               password=os.environ['REDIS_PASSWORD'],
                               db=int(os.environ['REDIS_DB']))
 
-with app.app_context():
-    on_start()
-
 
 def close_db_connection():
     db.close()
