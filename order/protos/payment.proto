@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+service PaymentService {
+    rpc batch_init_users(BatchInitRequest) returns (BatchInitResponse);
+    rpc create_user(CreateUserRequest) returns (CreateUserResponse);
+    rpc find_user(FindUserRequest) returns (FindUserResponse);
+    rpc add_funds(FundsRequest) returns (FundsResponse);
+    rpc remove_funds(FundsRequest) returns (FundsResponse);
+}
+
+message BatchInitRequest {
+    int32 n = 1;
+    int32 starting_money = 2;
+}
+
+message BatchInitResponse {
+    string message = 1;
+}
+
+message CreateUserRequest {
+
+}
+
+message CreateUserResponse {
+    string user_id = 1;
+}
+
+message FindUserRequest {
+    string user_id = 1;
+}
+
+message FindUserResponse {
+    string user_id = 1;
+    int32 credit = 2;
+}
+
+message FundsRequest {
+    string user_id = 1;
+    int32 amount = 2;
+}
+
+message FundsResponse {
+    int32 statuscode = 1;
+}

@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+service OrderService {
+    rpc batch_init_users(BatchInitRequest) returns (BatchInitResponse);
+    rpc create_order(CreateOrderRequest) returns (CreateOrderResponse);
+    rpc find_order(OrderIdRequest) returns (FindOrderResponse);
+    rpc add_item(AddItemRequest) returns (StatuscodeResponse);
+    rpc checkout(OrderIdRequest) returns (StatuscodeResponse);
+}
+
+message BatchInitRequest {
+    int32 n = 1;
+    int32 n_items = 2;
+    int32 n_users = 3;
+    int32 item_price = 4;
+}
+
+message BatchInitResponse {
+    string message = 1;
+}
+
+message CreateOrderRequest {
+    string user_id = 1;
+}
+
+message CreateOrderResponse {
+    string order_id = 1;
+}
+
+message OrderIdRequest {
+    string order_id = 1;
+}
+
+message FindOrderResponse {
+    string order_id = 1;
+    bool paid = 2;
+    map<string, int32> items = 3;
+    string user_id = 4;
+    int32 total_cost = 5;
+}
+
+message AddItemRequest {
+    string order_id = 1;
+    string item_id = 2;
+    int32 quantity = 3;
+}
+
+message StatuscodeResponse {
+    int32 statuscode = 1;
+}

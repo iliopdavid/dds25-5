@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import atexit
@@ -6,9 +7,12 @@ import uuid
 
 import redis
 import requests
+import grpc
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
+
+from order.protos.payment_pb2_grpc import add_PaymentServiceServicer_to_server, PaymentService
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
@@ -173,8 +177,15 @@ def checkout(order_id: str):
     app.logger.debug("Checkout successful")
     return Response("Checkout successful", status=200)
 
+async def serve():
+    server = grpc.aio.server()
+    add_PaymentServiceServicer_to_server(PaymentService(), server)
+    server.add_insecure_port('[::]:50051')
+    await server.start()
+    await server.wait_for_termination()
 
 if __name__ == '__main__':
+    asyncio.run(serve())
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
     gunicorn_logger = logging.getLogger('gunicorn.error')
