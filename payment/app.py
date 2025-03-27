@@ -128,7 +128,6 @@ def find_user(user_id: str):
         }
     )
 
-
 @app.post('/add_funds/<user_id>/<amount>')
 def add_credit(user_id: str, amount: int):
     user_entry: UserValue = get_user_from_db(user_id)
@@ -143,22 +142,55 @@ def add_credit(user_id: str, amount: int):
     return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
 
 
-@app.post('/pay/<user_id>/<amount>')
-def remove_credit(user_id: str, amount: int):
-    app.logger.debug(f"Removing {amount} credit from user: {user_id}")
+@app.post('/pay/<user_id>/<order_id>/<amount>')
+def pay(user_id: str, order_id: str, amount: int):
+    amount = int(amount)
+    payment_key = f"payment:{user_id}:{order_id}"
+
     user_entry: UserValue = get_user_from_db(user_id)
-    # update credit, serialize and update database
-    user_entry.credit -= int(amount)
-    value = msgpack.encode(user_entry)
-    if user_entry.credit < 0:
-        abort(400, f"User: {user_id} credit cannot get reduced below zero!")
+
+    if db.exists(payment_key):
+        return jsonify({"paid": True})
+
+    if user_entry.credit < amount:
+        abort(400, f"User {user_id} does not have enough credit.")
+
+    # SETNX to ensure one-time payment
+    if not db.set(payment_key, amount, nx=True):
+        return jsonify({"paid": True})
+
+    user_entry.credit -= amount
+    encoded_user = msgpack.encode(user_entry)
+
     try:
-        log({user_id: value})
-        db.set(user_id, value)
+        db.set(user_id, encoded_user)
+        log({user_id: encoded_user})
+    except redis.exceptions.RedisError:
+        db.delete(payment_key)
+        return abort(400, DB_ERROR_STR)
+
+    return jsonify({"paid": True})
+
+@app.post('/cancel/<user_id>/<order_id>')
+def cancel_payment(user_id: str, order_id: str):
+    payment_key = f"payment:{user_id}:{order_id}"
+    try:
+        amount = db.get(payment_key)
+        if amount is None:
+            return jsonify({"cancelled": False})
+
+        amount = int(amount)
+        user_entry: UserValue = get_user_from_db(user_id)
+        user_entry.credit += amount
+
+        encoded_user = msgpack.encode(user_entry)
+        db.set(user_id, encoded_user)
+        log({user_id: encoded_user})
+        db.delete(payment_key)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
 
+    return jsonify({"cancelled": True})
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000, debug=True)

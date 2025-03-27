@@ -17,6 +17,8 @@ services:
     image: order:latest
     environment:
       - GATEWAY_URL=http://gateway:80
+      - STOCK_URL=http://stock-service:5000
+      - PAYMENT_URL=http://payment-service:5000
     volumes:
       - ./logging:/home/flask-app/logging
     command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info -c gunicorn_config.py app:app
