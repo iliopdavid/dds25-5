@@ -3,26 +3,42 @@ import logging
 import os
 import atexit
 import random
+import threading
 import uuid
 
 import redis
 import requests
 
+
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
+from consumer import OrderConsumer
+from producer import OrderProducer
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
 
-GATEWAY_URL = os.environ['GATEWAY_URL']
+GATEWAY_URL = os.environ["GATEWAY_URL"]
 
 LOG_DIR = "logging"
 LOG_FILENAME = "order_log.txt"
 LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
+app = Flask("order-service")
+app.logger.setLevel(logging.INFO)
+consumer = OrderConsumer()
+producer = OrderProducer()
+
+db: redis.Redis = redis.Redis(
+    host=os.environ["REDIS_HOST"],
+    port=int(os.environ["REDIS_PORT"]),
+    password=os.environ["REDIS_PASSWORD"],
+    db=int(os.environ["REDIS_DB"]),
+)
+
 
 def recover_from_logs():
-    with open(LOG_PATH, 'r') as file:
+    with open(LOG_PATH, "r") as file:
         for line in file:
             info = line.split(", ")
             db.set(info[0], base64.b64decode(info[1]))
@@ -33,19 +49,22 @@ def on_start():
         recover_from_logs()
     else:
         try:
-            with open(LOG_PATH, 'x'):
+            with open(LOG_PATH, "x"):
                 pass
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
             return abort(400, DB_ERROR_STR)
 
 
-app = Flask("order-service")
+def start_consumer():
+    app.logger.debug("Consumer started!")
+    consumer.consume_messages()
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
+
+def start_consumer_thread():
+    consumer_thread = threading.Thread(target=start_consumer)
+    consumer_thread.daemon = True
+    consumer_thread.start()
 
 
 def close_db_connection():
@@ -53,6 +72,22 @@ def close_db_connection():
 
 
 atexit.register(close_db_connection)
+
+
+def complete_order(order_id):
+    # todo: fix this potentially
+    # Both payment and stock were successful, mark the order as completed
+    order_entry = get_order_from_db(order_id)
+    order_entry.paid = True
+    value = msgpack.encode(order_entry)
+    try:
+        log({order_id: value})
+        db.set(order_id, value)
+    except Exception as e:
+        # Log the error and send a failure event
+        error_message = str(e)
+        log({"error": error_message})
+    app.logger.debug("Checkout successful")
 
 
 class OrderValue(Struct):
@@ -77,24 +112,26 @@ def get_order_from_db(order_id: str) -> OrderValue | None:
 
 
 def log(kv_pairs: dict):
-    with open(LOG_PATH, 'a') as log_file:
-        for (k, v) in kv_pairs.items():
-            log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
+    with open(LOG_PATH, "a") as log_file:
+        for k, v in kv_pairs.items():
+            log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
-@app.post('/create/<user_id>')
+@app.post("/create/<user_id>")
 def create_order(user_id: str):
     key = str(uuid.uuid4())
-    value = msgpack.encode(OrderValue(paid=False, items={}, user_id=user_id, total_cost=0))
+    value = msgpack.encode(
+        OrderValue(paid=False, items={}, user_id=user_id, total_cost=0)
+    )
     try:
         log({key: value})
         db.set(key, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return jsonify({'order_id': key})
+    return jsonify({"order_id": key})
 
 
-@app.post('/batch_init/<n>/<n_items>/<n_users>/<item_price>')
+@app.post("/batch_init/<n>/<n_items>/<n_users>/<item_price>")
 def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
     n = int(n)
     n_items = int(n_items)
@@ -105,14 +142,17 @@ def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
         user_id = random.randint(0, n_users - 1)
         item1_id = random.randint(0, n_items - 1)
         item2_id = random.randint(0, n_items - 1)
-        value = OrderValue(paid=False,
-                           items={f"{item1_id}": 1, f"{item2_id}": 1},
-                           user_id=f"{user_id}",
-                           total_cost=2 * item_price)
+        value = OrderValue(
+            paid=False,
+            items={f"{item1_id}": 1, f"{item2_id}": 1},
+            user_id=f"{user_id}",
+            total_cost=2 * item_price,
+        )
         return value
 
-    kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(generate_entry())
-                                  for i in range(n)}
+    kv_pairs: dict[str, bytes] = {
+        f"{i}": msgpack.encode(generate_entry()) for i in range(n)
+    }
     try:
         log(kv_pairs)
         db.mset(kv_pairs)
@@ -121,7 +161,7 @@ def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
     return jsonify({"msg": "Batch init for orders successful"})
 
 
-@app.get('/find/<order_id>')
+@app.get("/find/<order_id>")
 def find_order(order_id: str):
     order_entry: OrderValue = get_order_from_db(order_id)
     return jsonify(
@@ -130,7 +170,7 @@ def find_order(order_id: str):
             "paid": order_entry.paid,
             "items": list(order_entry.items.keys()),
             "user_id": order_entry.user_id,
-            "total_cost": order_entry.total_cost
+            "total_cost": order_entry.total_cost,
         }
     )
 
@@ -153,7 +193,7 @@ def send_get_request(url: str):
         return response
 
 
-@app.post('/addItem/<order_id>/<item_id>/<quantity>')
+@app.post("/addItem/<order_id>/<item_id>/<quantity>")
 def add_item(order_id: str, item_id: str, quantity: int):
     order_entry: OrderValue = get_order_from_db(order_id)
     item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
@@ -172,8 +212,10 @@ def add_item(order_id: str, item_id: str, quantity: int):
         db.set(order_id, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"Item: {item_id} added to: {order_id} price updated to: {order_entry.total_cost}",
-                    status=200)
+    return Response(
+        f"Item: {item_id} added to: {order_id} price updated to: {order_entry.total_cost}",
+        status=200,
+    )
 
 
 def rollback_stock(removed_items: dict[str, int]):
@@ -181,39 +223,43 @@ def rollback_stock(removed_items: dict[str, int]):
         send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
 
 
-@app.post('/checkout/<order_id>')
+@app.post("/checkout/<order_id>")
 def checkout(order_id: str):
     app.logger.debug(f"Checking out {order_id}")
     order_entry: OrderValue = get_order_from_db(order_id)
-    # The removed items will contain the items that we already have successfully subtracted stock from
-    # for rollback purposes.
-    removed_items: dict[str, int] = {}
-    for item_id, quantity in order_entry.items.items():
-        stock_reply = send_post_request(f"{GATEWAY_URL}/stock/subtract/{item_id}/{quantity}")
-        if stock_reply.status_code != 200:
-            # If one item does not have enough stock we need to rollback
-            rollback_stock(removed_items)
-            abort(400, f'Out of stock on item_id: {item_id}')
-        removed_items[item_id] = quantity
-    user_reply = send_post_request(f"{GATEWAY_URL}/payment/pay/{order_entry.user_id}/{order_entry.total_cost}")
-    if user_reply.status_code != 200:
-        # If the user does not have enough credit we need to rollback all the item stock subtractions
-        rollback_stock(removed_items)
-        abort(400, "User out of credit")
-    order_entry.paid = True
-    value = msgpack.encode(order_entry)
-    try:
-        log({order_id: value})
-        db.set(order_id, value)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    app.logger.debug("Checkout successful")
-    return Response("Checkout successful", status=200)
+
+    app.logger.debug(f"Sending event out to payment for {order_id}")
+
+    # Send an event to payment service to reduct credit
+    # todo: use partitions based on user id?
+    producer.send_event(
+        "order-created-payment",
+        "a",
+        {"user_id": order_entry.user_id, "total_amount": order_entry.total_cost},
+    )
+
+    app.logger.debug(f"Event sent out to payment for {order_id}")
+
+    # Send an event to the Stock Service to reduce stock
+    producer.send_event(
+        "order-created-stock",
+        key=order_entry.user_id,
+        value={
+            "order_id": order_id,
+            "items": order_entry.items,
+        },
+    )
+
+    app.logger.debug(f"Event sent out to stock for {order_id}")
+
+    return jsonify({"message": "Order checkout initiated"}), 200
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    start_consumer_thread()
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
+    start_consumer_thread()

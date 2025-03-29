@@ -2,6 +2,7 @@ import base64
 import logging
 import os
 import atexit
+import threading
 import uuid
 
 import redis
@@ -9,6 +10,8 @@ import requests
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
+from consumer import PaymentConsumer
+from producer import PaymentProducer
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
@@ -17,9 +20,18 @@ LOG_DIR = "logging"
 LOG_FILENAME = "payment_log.txt"
 LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
+app = Flask("payment-service")
+
+db: redis.Redis = redis.Redis(
+    host=os.environ["REDIS_HOST"],
+    port=int(os.environ["REDIS_PORT"]),
+    password=os.environ["REDIS_PASSWORD"],
+    db=int(os.environ["REDIS_DB"]),
+)
+
 
 def recover_from_logs():
-    with open(LOG_PATH, 'r') as file:
+    with open(LOG_PATH, "r") as file:
         for line in file:
             info = line.split(", ")
             db.set(info[0], base64.b64decode(info[1]))
@@ -30,19 +42,23 @@ def on_start():
         recover_from_logs()
     else:
         try:
-            with open(LOG_PATH, 'x'):
+            with open(LOG_PATH, "x"):
                 pass
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
             return abort(400, DB_ERROR_STR)
 
 
-app = Flask("payment-service")
+def start_consumer():
+    consumer = PaymentConsumer()
+    app.logger.debug("Consumer started!")
+    consumer.consume_messages()
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
+
+def start_consumer_thread():
+    consumer_thread = threading.Thread(target=start_consumer)
+    consumer_thread.daemon = True
+    consumer_thread.start()
 
 
 def close_db_connection():
@@ -54,6 +70,7 @@ atexit.register(close_db_connection)
 
 class UserValue(Struct):
     credit: int
+
 
 def send_post_request(url: str):
     try:
@@ -72,6 +89,7 @@ def send_get_request(url: str):
     else:
         return response
 
+
 def get_user_from_db(user_id: str) -> UserValue | None:
     try:
         # get serialized data
@@ -87,12 +105,12 @@ def get_user_from_db(user_id: str) -> UserValue | None:
 
 
 def log(kv_pairs: dict):
-    with open(LOG_PATH, 'a') as log_file:
-        for (k, v) in kv_pairs.items():
-            log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
+    with open(LOG_PATH, "a") as log_file:
+        for k, v in kv_pairs.items():
+            log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
-@app.post('/create_user')
+@app.post("/create_user")
 def create_user():
     key = str(uuid.uuid4())
     value = msgpack.encode(UserValue(credit=0))
@@ -101,15 +119,16 @@ def create_user():
         db.set(key, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return jsonify({'user_id': key})
+    return jsonify({"user_id": key})
 
 
-@app.post('/batch_init/<n>/<starting_money>')
+@app.post("/batch_init/<n>/<starting_money>")
 def batch_init_users(n: int, starting_money: int):
     n = int(n)
     starting_money = int(starting_money)
-    kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(UserValue(credit=starting_money))
-                                  for i in range(n)}
+    kv_pairs: dict[str, bytes] = {
+        f"{i}": msgpack.encode(UserValue(credit=starting_money)) for i in range(n)
+    }
     try:
         log(kv_pairs)
         db.mset(kv_pairs)
@@ -118,18 +137,13 @@ def batch_init_users(n: int, starting_money: int):
     return jsonify({"msg": "Batch init for users successful"})
 
 
-@app.get('/find_user/<user_id>')
+@app.get("/find_user/<user_id>")
 def find_user(user_id: str):
     user_entry: UserValue = get_user_from_db(user_id)
-    return jsonify(
-        {
-            "user_id": user_id,
-            "credit": user_entry.credit
-        }
-    )
+    return jsonify({"user_id": user_id, "credit": user_entry.credit})
 
 
-@app.post('/add_funds/<user_id>/<amount>')
+@app.post("/add_funds/<user_id>/<amount>")
 def add_credit(user_id: str, amount: int):
     user_entry: UserValue = get_user_from_db(user_id)
     # update credit, serialize and update database
@@ -140,10 +154,12 @@ def add_credit(user_id: str, amount: int):
         db.set(user_id, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
+    return Response(
+        f"User: {user_id} credit updated to: {user_entry.credit}", status=200
+    )
 
 
-@app.post('/pay/<user_id>/<amount>')
+@app.post("/pay/<user_id>/<amount>")
 def remove_credit(user_id: str, amount: int):
     app.logger.debug(f"Removing {amount} credit from user: {user_id}")
     user_entry: UserValue = get_user_from_db(user_id)
@@ -157,12 +173,16 @@ def remove_credit(user_id: str, amount: int):
         db.set(user_id, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
+    return Response(
+        f"User: {user_id} credit updated to: {user_entry.credit}", status=200
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+    start_consumer_thread()
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
+    start_consumer_thread()
