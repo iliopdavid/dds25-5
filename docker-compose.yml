@@ -16,8 +16,11 @@ services:
     build: ./order
     image: order:latest
     environment:
-      - GATEWAY_URL=http://gateway:80
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+      - GRPC_HOST=order-service
+      - GRPC_PORT=50050
+    command: ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+    ports:
+      - "5000:5000"
     env_file:
       - env/order_redis.env
     depends_on:
@@ -30,7 +33,14 @@ services:
   stock-service:
     build: ./stock
     image: stock:latest
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    environment:
+      - GRPC_HOST=stock-service
+      - GRPC_PORT=50052
+    #command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    command: [ "supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf" ]
+    ports:
+      - "5002:5002"
+      - "50052:50052"
     env_file:
       - env/stock_redis.env
     depends_on:
@@ -43,7 +53,14 @@ services:
   payment-service:
     build: ./payment
     image: user:latest
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    environment:
+      - GRPC_HOST=payment-service
+      - GRPC_PORT=50051
+    #command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
+    command: [ "supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf" ]
+    ports:
+      - "5001:5001"
+      - "50051:50051"
     env_file:
       - env/payment_redis.env
     depends_on:

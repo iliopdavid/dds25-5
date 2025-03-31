@@ -1,21 +1,19 @@
 syntax = "proto3";
-import "google/protobuf/struct.proto";
 
 service PaymentService {
-    rpc get_json(CreateUserRequest) returns (google.protobuf.Struct);
-    rpc batch_init_users(BatchInitPayRequest) returns (BatchInitPayResponse);
+    rpc batch_init_users(BatchInitRequest) returns (BatchInitResponse);
     rpc create_user(CreateUserRequest) returns (CreateUserResponse);
     rpc find_user(FindUserRequest) returns (FindUserResponse);
-    rpc add_credit(FundsRequest) returns (FundsResponse);
-    rpc remove_credit(FundsRequest) returns (FundsResponse);
+    rpc add_funds(FundsRequest) returns (FundsResponse);
+    rpc remove_funds(FundsRequest) returns (FundsResponse);
 }
 
-message BatchInitPayRequest {
+message BatchInitRequest {
     int32 n = 1;
     int32 starting_money = 2;
 }
 
-message BatchInitPayResponse {
+message BatchInitResponse {
     string message = 1;
 }
 
@@ -42,6 +40,5 @@ message FundsRequest {
 }
 
 message FundsResponse {
-    string message = 1;
-    int32 statuscode = 2;
+    int32 statuscode = 1;
 }

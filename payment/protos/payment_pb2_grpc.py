@@ -3,7 +3,8 @@
 import grpc
 import warnings
 
-import payment_pb2 as payment__pb2
+from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
+from protos import payment_pb2 as protos_dot_payment__pb2
 
 GRPC_GENERATED_VERSION = '1.71.0'
 GRPC_VERSION = grpc.__version__
@@ -18,7 +19,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in payment_pb2_grpc.py depends on'
+        + f' but the generated code in protos/payment_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -34,35 +35,46 @@ class PaymentServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
+        self.get_json = channel.unary_unary(
+                '/PaymentService/get_json',
+                request_serializer=protos_dot_payment__pb2.CreateUserRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+                _registered_method=True)
         self.batch_init_users = channel.unary_unary(
                 '/PaymentService/batch_init_users',
-                request_serializer=payment__pb2.BatchInitRequest.SerializeToString,
-                response_deserializer=payment__pb2.BatchInitResponse.FromString,
+                request_serializer=protos_dot_payment__pb2.BatchInitPayRequest.SerializeToString,
+                response_deserializer=protos_dot_payment__pb2.BatchInitPayResponse.FromString,
                 _registered_method=True)
         self.create_user = channel.unary_unary(
                 '/PaymentService/create_user',
-                request_serializer=payment__pb2.CreateUserRequest.SerializeToString,
-                response_deserializer=payment__pb2.CreateUserResponse.FromString,
+                request_serializer=protos_dot_payment__pb2.CreateUserRequest.SerializeToString,
+                response_deserializer=protos_dot_payment__pb2.CreateUserResponse.FromString,
                 _registered_method=True)
         self.find_user = channel.unary_unary(
                 '/PaymentService/find_user',
-                request_serializer=payment__pb2.FindUserRequest.SerializeToString,
-                response_deserializer=payment__pb2.FindUserResponse.FromString,
+                request_serializer=protos_dot_payment__pb2.FindUserRequest.SerializeToString,
+                response_deserializer=protos_dot_payment__pb2.FindUserResponse.FromString,
                 _registered_method=True)
-        self.add_funds = channel.unary_unary(
-                '/PaymentService/add_funds',
-                request_serializer=payment__pb2.FundsRequest.SerializeToString,
-                response_deserializer=payment__pb2.FundsResponse.FromString,
+        self.add_credit = channel.unary_unary(
+                '/PaymentService/add_credit',
+                request_serializer=protos_dot_payment__pb2.FundsRequest.SerializeToString,
+                response_deserializer=protos_dot_payment__pb2.FundsResponse.FromString,
                 _registered_method=True)
-        self.remove_funds = channel.unary_unary(
-                '/PaymentService/remove_funds',
-                request_serializer=payment__pb2.FundsRequest.SerializeToString,
-                response_deserializer=payment__pb2.FundsResponse.FromString,
+        self.remove_credit = channel.unary_unary(
+                '/PaymentService/remove_credit',
+                request_serializer=protos_dot_payment__pb2.FundsRequest.SerializeToString,
+                response_deserializer=protos_dot_payment__pb2.FundsResponse.FromString,
                 _registered_method=True)
 
 
 class PaymentServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
+
+    def get_json(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
     def batch_init_users(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -82,13 +94,13 @@ class PaymentServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def add_funds(self, request, context):
+    def add_credit(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def remove_funds(self, request, context):
+    def remove_credit(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -97,30 +109,35 @@ class PaymentServiceServicer(object):
 
 def add_PaymentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
+            'get_json': grpc.unary_unary_rpc_method_handler(
+                    servicer.get_json,
+                    request_deserializer=protos_dot_payment__pb2.CreateUserRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
+            ),
             'batch_init_users': grpc.unary_unary_rpc_method_handler(
                     servicer.batch_init_users,
-                    request_deserializer=payment__pb2.BatchInitRequest.FromString,
-                    response_serializer=payment__pb2.BatchInitResponse.SerializeToString,
+                    request_deserializer=protos_dot_payment__pb2.BatchInitPayRequest.FromString,
+                    response_serializer=protos_dot_payment__pb2.BatchInitPayResponse.SerializeToString,
             ),
             'create_user': grpc.unary_unary_rpc_method_handler(
                     servicer.create_user,
-                    request_deserializer=payment__pb2.CreateUserRequest.FromString,
-                    response_serializer=payment__pb2.CreateUserResponse.SerializeToString,
+                    request_deserializer=protos_dot_payment__pb2.CreateUserRequest.FromString,
+                    response_serializer=protos_dot_payment__pb2.CreateUserResponse.SerializeToString,
             ),
             'find_user': grpc.unary_unary_rpc_method_handler(
                     servicer.find_user,
-                    request_deserializer=payment__pb2.FindUserRequest.FromString,
-                    response_serializer=payment__pb2.FindUserResponse.SerializeToString,
+                    request_deserializer=protos_dot_payment__pb2.FindUserRequest.FromString,
+                    response_serializer=protos_dot_payment__pb2.FindUserResponse.SerializeToString,
             ),
-            'add_funds': grpc.unary_unary_rpc_method_handler(
-                    servicer.add_funds,
-                    request_deserializer=payment__pb2.FundsRequest.FromString,
-                    response_serializer=payment__pb2.FundsResponse.SerializeToString,
+            'add_credit': grpc.unary_unary_rpc_method_handler(
+                    servicer.add_credit,
+                    request_deserializer=protos_dot_payment__pb2.FundsRequest.FromString,
+                    response_serializer=protos_dot_payment__pb2.FundsResponse.SerializeToString,
             ),
-            'remove_funds': grpc.unary_unary_rpc_method_handler(
-                    servicer.remove_funds,
-                    request_deserializer=payment__pb2.FundsRequest.FromString,
-                    response_serializer=payment__pb2.FundsResponse.SerializeToString,
+            'remove_credit': grpc.unary_unary_rpc_method_handler(
+                    servicer.remove_credit,
+                    request_deserializer=protos_dot_payment__pb2.FundsRequest.FromString,
+                    response_serializer=protos_dot_payment__pb2.FundsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -132,6 +149,33 @@ def add_PaymentServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class PaymentService(object):
     """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def get_json(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/PaymentService/get_json',
+            protos_dot_payment__pb2.CreateUserRequest.SerializeToString,
+            google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
 
     @staticmethod
     def batch_init_users(request,
@@ -148,8 +192,8 @@ class PaymentService(object):
             request,
             target,
             '/PaymentService/batch_init_users',
-            payment__pb2.BatchInitRequest.SerializeToString,
-            payment__pb2.BatchInitResponse.FromString,
+            protos_dot_payment__pb2.BatchInitPayRequest.SerializeToString,
+            protos_dot_payment__pb2.BatchInitPayResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -175,8 +219,8 @@ class PaymentService(object):
             request,
             target,
             '/PaymentService/create_user',
-            payment__pb2.CreateUserRequest.SerializeToString,
-            payment__pb2.CreateUserResponse.FromString,
+            protos_dot_payment__pb2.CreateUserRequest.SerializeToString,
+            protos_dot_payment__pb2.CreateUserResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -202,8 +246,8 @@ class PaymentService(object):
             request,
             target,
             '/PaymentService/find_user',
-            payment__pb2.FindUserRequest.SerializeToString,
-            payment__pb2.FindUserResponse.FromString,
+            protos_dot_payment__pb2.FindUserRequest.SerializeToString,
+            protos_dot_payment__pb2.FindUserResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -215,7 +259,7 @@ class PaymentService(object):
             _registered_method=True)
 
     @staticmethod
-    def add_funds(request,
+    def add_credit(request,
             target,
             options=(),
             channel_credentials=None,
@@ -228,9 +272,9 @@ class PaymentService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/PaymentService/add_funds',
-            payment__pb2.FundsRequest.SerializeToString,
-            payment__pb2.FundsResponse.FromString,
+            '/PaymentService/add_credit',
+            protos_dot_payment__pb2.FundsRequest.SerializeToString,
+            protos_dot_payment__pb2.FundsResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -242,7 +286,7 @@ class PaymentService(object):
             _registered_method=True)
 
     @staticmethod
-    def remove_funds(request,
+    def remove_credit(request,
             target,
             options=(),
             channel_credentials=None,
@@ -255,9 +299,9 @@ class PaymentService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/PaymentService/remove_funds',
-            payment__pb2.FundsRequest.SerializeToString,
-            payment__pb2.FundsResponse.FromString,
+            '/PaymentService/remove_credit',
+            protos_dot_payment__pb2.FundsRequest.SerializeToString,
+            protos_dot_payment__pb2.FundsResponse.FromString,
             options,
             channel_credentials,
             insecure,

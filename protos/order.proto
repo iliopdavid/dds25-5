@@ -1,27 +1,21 @@
 syntax = "proto3";
-import "google/protobuf/struct.proto";
 
 service OrderService {
-    rpc get_json(EmptyRequest) returns (google.protobuf.Struct);
-    rpc batch_init_users(BatchInitOrderRequest) returns (BatchInitOrderResponse);
+    rpc batch_init_users(BatchInitRequest) returns (BatchInitResponse);
     rpc create_order(CreateOrderRequest) returns (CreateOrderResponse);
     rpc find_order(OrderIdRequest) returns (FindOrderResponse);
     rpc add_item(AddItemRequest) returns (StatuscodeResponse);
     rpc checkout(OrderIdRequest) returns (StatuscodeResponse);
 }
 
-message EmptyRequest {
-
-}
-
-message BatchInitOrderRequest {
+message BatchInitRequest {
     int32 n = 1;
     int32 n_items = 2;
     int32 n_users = 3;
     int32 item_price = 4;
 }
 
-message BatchInitOrderResponse {
+message BatchInitResponse {
     string message = 1;
 }
 
@@ -40,7 +34,7 @@ message OrderIdRequest {
 message FindOrderResponse {
     string order_id = 1;
     bool paid = 2;
-    repeated string items = 3;
+    map<string, int32> items = 3;
     string user_id = 4;
     int32 total_cost = 5;
 }
@@ -52,6 +46,5 @@ message AddItemRequest {
 }
 
 message StatuscodeResponse {
-    string message = 1;
-    int32 statuscode = 2;
+    int32 statuscode = 1;
 }

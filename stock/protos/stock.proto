@@ -1,20 +1,26 @@
 syntax = "proto3";
+import "google/protobuf/struct.proto";
 
 service StockService {
-    rpc batch_init_users(BatchInitRequest) returns (BatchInitResponse);
+    rpc get_json(EmptySRequest) returns (google.protobuf.Struct);
+    rpc batch_init_users(BatchInitStockRequest) returns (BatchInitStockResponse);
     rpc create_item(CreateItemRequest) returns (CreateItemResponse);
     rpc find_item(FindItemRequest) returns (FindItemResponse);
     rpc add_stock(StockRequest) returns (StockResponse);
     rpc remove_stock(StockRequest) returns (StockResponse);
 }
 
-message BatchInitRequest {
+message EmptySRequest {
+
+}
+
+message BatchInitStockRequest {
     int32 n = 1;
     int32 starting_money = 2;
     int32 item_price = 3;
 }
 
-message BatchInitResponse {
+message BatchInitStockResponse {
     string message = 1;
 }
 
@@ -41,5 +47,6 @@ message StockRequest {
 }
 
 message StockResponse {
-    int32 statuscode = 1;
+    string message = 1;
+    int32 statuscode = 2;
 }

@@ -3,7 +3,8 @@
 import grpc
 import warnings
 
-import order_pb2 as order__pb2
+from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
+from protos import order_pb2 as protos_dot_order__pb2
 
 GRPC_GENERATED_VERSION = '1.71.0'
 GRPC_VERSION = grpc.__version__
@@ -18,7 +19,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in order_pb2_grpc.py depends on'
+        + f' but the generated code in protos/order_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -34,35 +35,46 @@ class OrderServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
+        self.get_json = channel.unary_unary(
+                '/OrderService/get_json',
+                request_serializer=protos_dot_order__pb2.EmptyRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+                _registered_method=True)
         self.batch_init_users = channel.unary_unary(
                 '/OrderService/batch_init_users',
-                request_serializer=order__pb2.BatchInitRequest.SerializeToString,
-                response_deserializer=order__pb2.BatchInitResponse.FromString,
+                request_serializer=protos_dot_order__pb2.BatchInitOrderRequest.SerializeToString,
+                response_deserializer=protos_dot_order__pb2.BatchInitOrderResponse.FromString,
                 _registered_method=True)
         self.create_order = channel.unary_unary(
                 '/OrderService/create_order',
-                request_serializer=order__pb2.CreateOrderRequest.SerializeToString,
-                response_deserializer=order__pb2.CreateOrderResponse.FromString,
+                request_serializer=protos_dot_order__pb2.CreateOrderRequest.SerializeToString,
+                response_deserializer=protos_dot_order__pb2.CreateOrderResponse.FromString,
                 _registered_method=True)
         self.find_order = channel.unary_unary(
                 '/OrderService/find_order',
-                request_serializer=order__pb2.OrderIdRequest.SerializeToString,
-                response_deserializer=order__pb2.FindOrderResponse.FromString,
+                request_serializer=protos_dot_order__pb2.OrderIdRequest.SerializeToString,
+                response_deserializer=protos_dot_order__pb2.FindOrderResponse.FromString,
                 _registered_method=True)
         self.add_item = channel.unary_unary(
                 '/OrderService/add_item',
-                request_serializer=order__pb2.AddItemRequest.SerializeToString,
-                response_deserializer=order__pb2.StatuscodeResponse.FromString,
+                request_serializer=protos_dot_order__pb2.AddItemRequest.SerializeToString,
+                response_deserializer=protos_dot_order__pb2.StatuscodeResponse.FromString,
                 _registered_method=True)
         self.checkout = channel.unary_unary(
                 '/OrderService/checkout',
-                request_serializer=order__pb2.OrderIdRequest.SerializeToString,
-                response_deserializer=order__pb2.StatuscodeResponse.FromString,
+                request_serializer=protos_dot_order__pb2.OrderIdRequest.SerializeToString,
+                response_deserializer=protos_dot_order__pb2.StatuscodeResponse.FromString,
                 _registered_method=True)
 
 
 class OrderServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
+
+    def get_json(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
     def batch_init_users(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -97,30 +109,35 @@ class OrderServiceServicer(object):
 
 def add_OrderServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
+            'get_json': grpc.unary_unary_rpc_method_handler(
+                    servicer.get_json,
+                    request_deserializer=protos_dot_order__pb2.EmptyRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
+            ),
             'batch_init_users': grpc.unary_unary_rpc_method_handler(
                     servicer.batch_init_users,
-                    request_deserializer=order__pb2.BatchInitRequest.FromString,
-                    response_serializer=order__pb2.BatchInitResponse.SerializeToString,
+                    request_deserializer=protos_dot_order__pb2.BatchInitOrderRequest.FromString,
+                    response_serializer=protos_dot_order__pb2.BatchInitOrderResponse.SerializeToString,
             ),
             'create_order': grpc.unary_unary_rpc_method_handler(
                     servicer.create_order,
-                    request_deserializer=order__pb2.CreateOrderRequest.FromString,
-                    response_serializer=order__pb2.CreateOrderResponse.SerializeToString,
+                    request_deserializer=protos_dot_order__pb2.CreateOrderRequest.FromString,
+                    response_serializer=protos_dot_order__pb2.CreateOrderResponse.SerializeToString,
             ),
             'find_order': grpc.unary_unary_rpc_method_handler(
                     servicer.find_order,
-                    request_deserializer=order__pb2.OrderIdRequest.FromString,
-                    response_serializer=order__pb2.FindOrderResponse.SerializeToString,
+                    request_deserializer=protos_dot_order__pb2.OrderIdRequest.FromString,
+                    response_serializer=protos_dot_order__pb2.FindOrderResponse.SerializeToString,
             ),
             'add_item': grpc.unary_unary_rpc_method_handler(
                     servicer.add_item,
-                    request_deserializer=order__pb2.AddItemRequest.FromString,
-                    response_serializer=order__pb2.StatuscodeResponse.SerializeToString,
+                    request_deserializer=protos_dot_order__pb2.AddItemRequest.FromString,
+                    response_serializer=protos_dot_order__pb2.StatuscodeResponse.SerializeToString,
             ),
             'checkout': grpc.unary_unary_rpc_method_handler(
                     servicer.checkout,
-                    request_deserializer=order__pb2.OrderIdRequest.FromString,
-                    response_serializer=order__pb2.StatuscodeResponse.SerializeToString,
+                    request_deserializer=protos_dot_order__pb2.OrderIdRequest.FromString,
+                    response_serializer=protos_dot_order__pb2.StatuscodeResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -132,6 +149,33 @@ def add_OrderServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class OrderService(object):
     """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def get_json(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/OrderService/get_json',
+            protos_dot_order__pb2.EmptyRequest.SerializeToString,
+            google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
 
     @staticmethod
     def batch_init_users(request,
@@ -148,8 +192,8 @@ class OrderService(object):
             request,
             target,
             '/OrderService/batch_init_users',
-            order__pb2.BatchInitRequest.SerializeToString,
-            order__pb2.BatchInitResponse.FromString,
+            protos_dot_order__pb2.BatchInitOrderRequest.SerializeToString,
+            protos_dot_order__pb2.BatchInitOrderResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -175,8 +219,8 @@ class OrderService(object):
             request,
             target,
             '/OrderService/create_order',
-            order__pb2.CreateOrderRequest.SerializeToString,
-            order__pb2.CreateOrderResponse.FromString,
+            protos_dot_order__pb2.CreateOrderRequest.SerializeToString,
+            protos_dot_order__pb2.CreateOrderResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -202,8 +246,8 @@ class OrderService(object):
             request,
             target,
             '/OrderService/find_order',
-            order__pb2.OrderIdRequest.SerializeToString,
-            order__pb2.FindOrderResponse.FromString,
+            protos_dot_order__pb2.OrderIdRequest.SerializeToString,
+            protos_dot_order__pb2.FindOrderResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -229,8 +273,8 @@ class OrderService(object):
             request,
             target,
             '/OrderService/add_item',
-            order__pb2.AddItemRequest.SerializeToString,
-            order__pb2.StatuscodeResponse.FromString,
+            protos_dot_order__pb2.AddItemRequest.SerializeToString,
+            protos_dot_order__pb2.StatuscodeResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -256,8 +300,8 @@ class OrderService(object):
             request,
             target,
             '/OrderService/checkout',
-            order__pb2.OrderIdRequest.SerializeToString,
-            order__pb2.StatuscodeResponse.FromString,
+            protos_dot_order__pb2.OrderIdRequest.SerializeToString,
+            protos_dot_order__pb2.StatuscodeResponse.FromString,
             options,
             channel_credentials,
             insecure,

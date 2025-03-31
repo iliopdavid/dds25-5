@@ -1,23 +1,23 @@
-import asyncio
+import atexit
 import logging
 import os
-import atexit
 import random
 import uuid
 
+import grpc
 import redis
 import requests
-import grpc
-
+from flask import Flask, abort
 from msgspec import msgpack, Struct
-from flask import Flask, jsonify, abort, Response
 
-from order.protos.payment_pb2_grpc import add_PaymentServiceServicer_to_server, PaymentService
+from protos import order_pb2, stock_pb2_grpc, payment_pb2_grpc, stock_pb2
+from protos.order_pb2_grpc import OrderServiceServicer
+from protos.stock_pb2_grpc import StockService
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
 
-GATEWAY_URL = os.environ['GATEWAY_URL']
+#GATEWAY_URL = os.environ['GATEWAY_URL']
 
 app = Flask("order-service")
 
@@ -25,7 +25,6 @@ db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
                               port=int(os.environ['REDIS_PORT']),
                               password=os.environ['REDIS_PASSWORD'],
                               db=int(os.environ['REDIS_DB']))
-
 
 def close_db_connection():
     db.close()
@@ -39,72 +38,6 @@ class OrderValue(Struct):
     items: dict[str, int]
     user_id: str
     total_cost: int
-
-
-def get_order_from_db(order_id: str) -> OrderValue | None:
-    try:
-        # get serialized data
-        entry: bytes = db.get(order_id)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    # deserialize data if it exists else return null
-    entry: OrderValue | None = msgpack.decode(entry, type=OrderValue) if entry else None
-    if entry is None:
-        # if order does not exist in the database; abort
-        abort(400, f"Order: {order_id} not found!")
-    return entry
-
-
-@app.post('/create/<user_id>')
-def create_order(user_id: str):
-    key = str(uuid.uuid4())
-    value = msgpack.encode(OrderValue(paid=False, items={}, user_id=user_id, total_cost=0))
-    try:
-        db.set(key, value)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return jsonify({'order_id': key})
-
-
-@app.post('/batch_init/<n>/<n_items>/<n_users>/<item_price>')
-def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
-    n = int(n)
-    n_items = int(n_items)
-    n_users = int(n_users)
-    item_price = int(item_price)
-
-    def generate_entry() -> OrderValue:
-        user_id = random.randint(0, n_users - 1)
-        item1_id = random.randint(0, n_items - 1)
-        item2_id = random.randint(0, n_items - 1)
-        value = OrderValue(paid=False,
-                           items={f"{item1_id}": 1, f"{item2_id}": 1},
-                           user_id=f"{user_id}",
-                           total_cost=2 * item_price)
-        return value
-
-    kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(generate_entry())
-                                  for i in range(n)}
-    try:
-        db.mset(kv_pairs)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    return jsonify({"msg": "Batch init for orders successful"})
-
-
-@app.get('/find/<order_id>')
-def find_order(order_id: str):
-    order_entry: OrderValue = get_order_from_db(order_id)
-    return jsonify(
-        {
-            "order_id": order_id,
-            "paid": order_entry.paid,
-            "items": list(order_entry.items.keys()),
-            "user_id": order_entry.user_id,
-            "total_cost": order_entry.total_cost
-        }
-    )
-
 
 def send_post_request(url: str):
     try:
@@ -123,69 +56,120 @@ def send_get_request(url: str):
     else:
         return response
 
-
-@app.post('/addItem/<order_id>/<item_id>/<quantity>')
-def add_item(order_id: str, item_id: str, quantity: int):
-    order_entry: OrderValue = get_order_from_db(order_id)
-    item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
-    if item_reply.status_code != 200:
-        # Request failed because item does not exist
-        abort(400, f"Item: {item_id} does not exist!")
-    item_json: dict = item_reply.json()
-    if item_id in order_entry.items:
-        order_entry.items[item_id] += int(quantity)
-    else:
-        order_entry.items[item_id] = int(quantity)
-    order_entry.total_cost += int(quantity) * item_json["price"]
+def get_order_from_db(order_id: str) -> OrderValue | None:
     try:
-        db.set(order_id, msgpack.encode(order_entry))
+        # get serialized data
+        entry: bytes = db.get(order_id)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"Item: {item_id} added to: {order_id} price updated to: {order_entry.total_cost}",
-                    status=200)
-
+    # deserialize data if it exists else return null
+    entry: OrderValue | None = msgpack.decode(entry, type=OrderValue) if entry else None
+    if entry is None:
+        # if order does not exist in the database; abort
+        abort(400, f"Order: {order_id} not found!")
+    return entry
 
 def rollback_stock(removed_items: dict[str, int]):
+    stockstub = stock_pb2_grpc.StockServiceStub(StockService)
     for item_id, quantity in removed_items.items():
-        send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
+        stockstub.add_stock(item_id, quantity)
+        #send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
 
+class OrderService(OrderServiceServicer):
+    def batch_init_users(self, request, context):
+        n = int(request.n)
+        n_items = int(request.n_items)
+        n_users = int(request.n_users)
+        item_price = int(request.item_price)
 
-@app.post('/checkout/<order_id>')
-def checkout(order_id: str):
-    app.logger.debug(f"Checking out {order_id}")
-    order_entry: OrderValue = get_order_from_db(order_id)
-    # The removed items will contain the items that we already have successfully subtracted stock from
-    # for rollback purposes.
-    removed_items: dict[str, int] = {}
-    for item_id, quantity in order_entry.items.items():
-        stock_reply = send_post_request(f"{GATEWAY_URL}/stock/subtract/{item_id}/{quantity}")
-        if stock_reply.status_code != 200:
-            # If one item does not have enough stock we need to rollback
-            rollback_stock(removed_items)
-            abort(400, f'Out of stock on item_id: {item_id}')
-        removed_items[item_id] = quantity
-    user_reply = send_post_request(f"{GATEWAY_URL}/payment/pay/{order_entry.user_id}/{order_entry.total_cost}")
-    if user_reply.status_code != 200:
-        # If the user does not have enough credit we need to rollback all the item stock subtractions
-        rollback_stock(removed_items)
-        abort(400, "User out of credit")
-    order_entry.paid = True
-    try:
-        db.set(order_id, msgpack.encode(order_entry))
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    app.logger.debug("Checkout successful")
-    return Response("Checkout successful", status=200)
+        def generate_entry() -> OrderValue:
+            user_id = random.randint(0, n_users - 1)
+            item1_id = random.randint(0, n_items - 1)
+            item2_id = random.randint(0, n_items - 1)
+            value = OrderValue(paid=False,
+                               items={f"{item1_id}": 1, f"{item2_id}": 1},
+                               user_id=f"{user_id}",
+                               total_cost=2 * item_price)
+            return value
 
-async def serve():
-    server = grpc.aio.server()
-    add_PaymentServiceServicer_to_server(PaymentService(), server)
-    server.add_insecure_port('[::]:50051')
-    await server.start()
-    await server.wait_for_termination()
+        kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(generate_entry())
+                                      for i in range(n)}
+        try:
+            db.mset(kv_pairs)
+        except redis.exceptions.RedisError:
+            return abort(400, DB_ERROR_STR)
+        return order_pb2.BatchInitOrderResponse(message="Batch init for orders successful")
+
+    def create_order(self, request, context):
+        key = str(uuid.uuid4())
+        value = msgpack.encode(OrderValue(paid=False, items={}, user_id=request.user_id, total_cost=0))
+        try:
+            db.set(key, value)
+        except redis.exceptions.RedisError:
+            return abort(400, DB_ERROR_STR)
+        return order_pb2.CreateOrderResponse(order_id=key)
+
+    def find_order(self, request, context):
+        order_entry: OrderValue = get_order_from_db(request.order_id)
+        return order_pb2.FindOrderResponse(order_id=request.order_id, paid=order_entry.paid,
+                                                        items=list(order_entry.items.keys()), user_id=order_entry.user_id,
+                                                        total_cost=order_entry.total_cost)
+
+    def add_item(self, request, context):
+        with grpc.aio.insecure_channel('localhost:50052') as channel:
+            stockstub = stock_pb2_grpc.StockServiceStub(channel)
+            order_entry: OrderValue = get_order_from_db(request.order_id)
+            item_reply = stockstub.find_item(request.item_id)
+            #item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{request.item_id}")
+            if item_reply.status_code != 200:
+                # Request failed because item does not exist
+                abort(400, f"Item: {request.item_id} does not exist!")
+            item_json: dict = item_reply.json()
+            if request.item_id in order_entry.items:
+                order_entry.items[request.item_id] += int(request.quantity)
+            else:
+                order_entry.items[request.item_id] = int(request.quantity)
+            order_entry.total_cost += int(request.quantity) * item_json["price"]
+            try:
+                db.set(request.order_id, msgpack.encode(order_entry))
+            except redis.exceptions.RedisError:
+                return abort(400, DB_ERROR_STR)
+            return order_pb2.StatuscodeResponse(message=f"Item: {request.item_id} added to: {request.order_id} price updated to: {order_entry.total_cost}",
+                            statuscode=200)
+
+    def checkout(self, request, context):
+        with grpc.aio.insecure_channel('localhost:50052') as channelstock:
+            stockstub = stock_pb2_grpc.StockServiceStub(channelstock)
+            with grpc.aio.insecure_channel('localhost:50051') as channelpay:
+                paymentstub = payment_pb2_grpc.PaymentServiceStub(channelpay)
+                app.logger.debug(f"Checking out {request.order_id}")
+                order_entry: OrderValue = get_order_from_db(request.order_id)
+                # The removed items will contain the items that we already have successfully subtracted stock from
+                # for rollback purposes.
+                removed_items: dict[str, int] = {}
+                for item_id, quantity in order_entry.items.items():
+                    stock_reply = stockstub.remove_stock(stock_pb2.StockRequest(item_id, quantity))
+                    #stock_reply = send_post_request(f"{GATEWAY_URL}/stock/subtract/{item_id}/{quantity}")
+                    if stock_reply.status_code != 200:
+                        # If one item does not have enough stock we need to rollback
+                        rollback_stock(removed_items)
+                        abort(400, f'Out of stock on item_id: {item_id}')
+                    removed_items[item_id] = quantity
+                user_reply = paymentstub.remove_credit(order_entry.user_id, order_entry.total_cost)
+                #user_reply = send_post_request(f"{GATEWAY_URL}/payment/pay/{order_entry.user_id}/{order_entry.total_cost}")
+                if user_reply.status_code != 200:
+                    # If the user does not have enough credit we need to rollback all the item stock subtractions
+                    rollback_stock(removed_items)
+                    abort(400, "User out of credit")
+                order_entry.paid = True
+                try:
+                    db.set(request.order_id, msgpack.encode(order_entry))
+                except redis.exceptions.RedisError:
+                    return abort(400, DB_ERROR_STR)
+                app.logger.debug("Checkout successful")
+                return order_pb2.StatuscodeResponse(message="Checkout successful", statuscode=200)
 
 if __name__ == '__main__':
-    asyncio.run(serve())
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
     gunicorn_logger = logging.getLogger('gunicorn.error')

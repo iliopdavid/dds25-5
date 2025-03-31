@@ -3,7 +3,8 @@
 import grpc
 import warnings
 
-import stock_pb2 as stock__pb2
+from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
+from protos import stock_pb2 as protos_dot_stock__pb2
 
 GRPC_GENERATED_VERSION = '1.71.0'
 GRPC_VERSION = grpc.__version__
@@ -18,7 +19,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + f' but the generated code in stock_pb2_grpc.py depends on'
+        + f' but the generated code in protos/stock_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -34,35 +35,46 @@ class StockServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
+        self.get_json = channel.unary_unary(
+                '/StockService/get_json',
+                request_serializer=protos_dot_stock__pb2.EmptySRequest.SerializeToString,
+                response_deserializer=google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+                _registered_method=True)
         self.batch_init_users = channel.unary_unary(
                 '/StockService/batch_init_users',
-                request_serializer=stock__pb2.BatchInitRequest.SerializeToString,
-                response_deserializer=stock__pb2.BatchInitResponse.FromString,
+                request_serializer=protos_dot_stock__pb2.BatchInitStockRequest.SerializeToString,
+                response_deserializer=protos_dot_stock__pb2.BatchInitStockResponse.FromString,
                 _registered_method=True)
         self.create_item = channel.unary_unary(
                 '/StockService/create_item',
-                request_serializer=stock__pb2.CreateItemRequest.SerializeToString,
-                response_deserializer=stock__pb2.CreateItemResponse.FromString,
+                request_serializer=protos_dot_stock__pb2.CreateItemRequest.SerializeToString,
+                response_deserializer=protos_dot_stock__pb2.CreateItemResponse.FromString,
                 _registered_method=True)
         self.find_item = channel.unary_unary(
                 '/StockService/find_item',
-                request_serializer=stock__pb2.FindItemRequest.SerializeToString,
-                response_deserializer=stock__pb2.FindItemResponse.FromString,
+                request_serializer=protos_dot_stock__pb2.FindItemRequest.SerializeToString,
+                response_deserializer=protos_dot_stock__pb2.FindItemResponse.FromString,
                 _registered_method=True)
         self.add_stock = channel.unary_unary(
                 '/StockService/add_stock',
-                request_serializer=stock__pb2.StockRequest.SerializeToString,
-                response_deserializer=stock__pb2.StockResponse.FromString,
+                request_serializer=protos_dot_stock__pb2.StockRequest.SerializeToString,
+                response_deserializer=protos_dot_stock__pb2.StockResponse.FromString,
                 _registered_method=True)
         self.remove_stock = channel.unary_unary(
                 '/StockService/remove_stock',
-                request_serializer=stock__pb2.StockRequest.SerializeToString,
-                response_deserializer=stock__pb2.StockResponse.FromString,
+                request_serializer=protos_dot_stock__pb2.StockRequest.SerializeToString,
+                response_deserializer=protos_dot_stock__pb2.StockResponse.FromString,
                 _registered_method=True)
 
 
 class StockServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
+
+    def get_json(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
     def batch_init_users(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -97,30 +109,35 @@ class StockServiceServicer(object):
 
 def add_StockServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
+            'get_json': grpc.unary_unary_rpc_method_handler(
+                    servicer.get_json,
+                    request_deserializer=protos_dot_stock__pb2.EmptySRequest.FromString,
+                    response_serializer=google_dot_protobuf_dot_struct__pb2.Struct.SerializeToString,
+            ),
             'batch_init_users': grpc.unary_unary_rpc_method_handler(
                     servicer.batch_init_users,
-                    request_deserializer=stock__pb2.BatchInitRequest.FromString,
-                    response_serializer=stock__pb2.BatchInitResponse.SerializeToString,
+                    request_deserializer=protos_dot_stock__pb2.BatchInitStockRequest.FromString,
+                    response_serializer=protos_dot_stock__pb2.BatchInitStockResponse.SerializeToString,
             ),
             'create_item': grpc.unary_unary_rpc_method_handler(
                     servicer.create_item,
-                    request_deserializer=stock__pb2.CreateItemRequest.FromString,
-                    response_serializer=stock__pb2.CreateItemResponse.SerializeToString,
+                    request_deserializer=protos_dot_stock__pb2.CreateItemRequest.FromString,
+                    response_serializer=protos_dot_stock__pb2.CreateItemResponse.SerializeToString,
             ),
             'find_item': grpc.unary_unary_rpc_method_handler(
                     servicer.find_item,
-                    request_deserializer=stock__pb2.FindItemRequest.FromString,
-                    response_serializer=stock__pb2.FindItemResponse.SerializeToString,
+                    request_deserializer=protos_dot_stock__pb2.FindItemRequest.FromString,
+                    response_serializer=protos_dot_stock__pb2.FindItemResponse.SerializeToString,
             ),
             'add_stock': grpc.unary_unary_rpc_method_handler(
                     servicer.add_stock,
-                    request_deserializer=stock__pb2.StockRequest.FromString,
-                    response_serializer=stock__pb2.StockResponse.SerializeToString,
+                    request_deserializer=protos_dot_stock__pb2.StockRequest.FromString,
+                    response_serializer=protos_dot_stock__pb2.StockResponse.SerializeToString,
             ),
             'remove_stock': grpc.unary_unary_rpc_method_handler(
                     servicer.remove_stock,
-                    request_deserializer=stock__pb2.StockRequest.FromString,
-                    response_serializer=stock__pb2.StockResponse.SerializeToString,
+                    request_deserializer=protos_dot_stock__pb2.StockRequest.FromString,
+                    response_serializer=protos_dot_stock__pb2.StockResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -132,6 +149,33 @@ def add_StockServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class StockService(object):
     """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def get_json(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/StockService/get_json',
+            protos_dot_stock__pb2.EmptySRequest.SerializeToString,
+            google_dot_protobuf_dot_struct__pb2.Struct.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
 
     @staticmethod
     def batch_init_users(request,
@@ -148,8 +192,8 @@ class StockService(object):
             request,
             target,
             '/StockService/batch_init_users',
-            stock__pb2.BatchInitRequest.SerializeToString,
-            stock__pb2.BatchInitResponse.FromString,
+            protos_dot_stock__pb2.BatchInitStockRequest.SerializeToString,
+            protos_dot_stock__pb2.BatchInitStockResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -175,8 +219,8 @@ class StockService(object):
             request,
             target,
             '/StockService/create_item',
-            stock__pb2.CreateItemRequest.SerializeToString,
-            stock__pb2.CreateItemResponse.FromString,
+            protos_dot_stock__pb2.CreateItemRequest.SerializeToString,
+            protos_dot_stock__pb2.CreateItemResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -202,8 +246,8 @@ class StockService(object):
             request,
             target,
             '/StockService/find_item',
-            stock__pb2.FindItemRequest.SerializeToString,
-            stock__pb2.FindItemResponse.FromString,
+            protos_dot_stock__pb2.FindItemRequest.SerializeToString,
+            protos_dot_stock__pb2.FindItemResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -229,8 +273,8 @@ class StockService(object):
             request,
             target,
             '/StockService/add_stock',
-            stock__pb2.StockRequest.SerializeToString,
-            stock__pb2.StockResponse.FromString,
+            protos_dot_stock__pb2.StockRequest.SerializeToString,
+            protos_dot_stock__pb2.StockResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -256,8 +300,8 @@ class StockService(object):
             request,
             target,
             '/StockService/remove_stock',
-            stock__pb2.StockRequest.SerializeToString,
-            stock__pb2.StockResponse.FromString,
+            protos_dot_stock__pb2.StockRequest.SerializeToString,
+            protos_dot_stock__pb2.StockResponse.FromString,
             options,
             channel_credentials,
             insecure,
