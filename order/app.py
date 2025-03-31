@@ -216,7 +216,7 @@ def safe_post(url, retries=3, delay=0.05):
         try:
             r = requests.post(url)
             if r.status_code == 200:
-                time.sleep(0.01)  # ✅ tiny buffer to let other services catch up
+                time.sleep(0.01)  # tiny buffer to let other services catch up
                 return r
         except:
             time.sleep(delay)
