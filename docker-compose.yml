@@ -27,22 +27,25 @@ services:
 
   order-db:
     image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    command: redis-server --requirepass redis --maxmemory 512mb --save "" --appendonly no
 
   stock-service:
     build: ./stock
     image: stock:latest
     volumes:
       - ./logging:/home/flask-app/logging
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info -c gunicorn_config.py app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - env/stock_redis.env
     depends_on:
       - stock-db
 
   stock-db:
-    image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    build:
+      context: ./stock
+      dockerfile: Dockerfile.redis
+    volumes:
+      - ./env/stock_redis.env:/usr/local/bin/stock_redis.env:ro
 
   payment-service:
     build: ./payment
@@ -57,4 +60,4 @@ services:
 
   payment-db:
     image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    command: redis-server --requirepass redis --maxmemory 512mb --save "" --appendonly no
