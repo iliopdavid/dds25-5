@@ -83,7 +83,6 @@ def log(kv_pairs: dict):
         for (k, v) in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
 
-
 @app.post('/create/<user_id>')
 def create_order(user_id: str):
     key = str(uuid.uuid4())
@@ -217,6 +216,7 @@ def safe_post(url, retries=3, delay=0.05):
         try:
             r = requests.post(url)
             if r.status_code == 200:
+                time.sleep(0.01)  # ✅ tiny buffer to let other services catch up
                 return r
         except:
             time.sleep(delay)

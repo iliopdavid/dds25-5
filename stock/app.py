@@ -76,8 +76,7 @@ def log(kv_pairs: dict):
     with open(LOG_PATH, "a") as log_file:
         for k, v in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
-
-
+            
 @app.post('/item/create/<price>')
 def create_item(price: int):
     key = str(uuid.uuid4())
@@ -130,18 +129,40 @@ def add_stock(item_id: str, amount: int):
 
 @app.post('/subtract/<item_id>/<amount>')
 def remove_stock(item_id: str, amount: int):
-    item_entry: StockValue = get_item_from_db(item_id)
-    # update stock, serialize and update database
-    item_entry.stock -= int(amount)
-    value = msgpack.encode(item_entry)
-    app.logger.debug(f"Item: {item_id} stock updated to: {item_entry.stock}")
-    if item_entry.stock < 0:
-        abort(400, f"Item: {item_id} stock cannot get reduced below zero!")
+    amount = int(amount)
     try:
-        log({item_id: value})
-        db.set(item_id, value)
+        with db.pipeline() as pipe:
+            while True:
+                try:
+                    pipe.watch(item_id)
+
+                    item_bytes = pipe.get(item_id)
+                    if not item_bytes:
+                        pipe.unwatch()
+                        abort(400, f"Item: {item_id} not found!")
+
+                    item_entry = msgpack.decode(item_bytes, type=StockValue)
+
+                    if item_entry.stock < amount:
+                        pipe.unwatch()
+                        abort(400, f"Item: {item_id} does not have enough stock.")
+
+                    item_entry.stock -= amount
+                    encoded_item = msgpack.encode(item_entry)
+
+                    pipe.multi()
+                    pipe.set(item_id, encoded_item)
+                    pipe.execute()
+
+                    log({item_id: encoded_item})
+                    break
+
+                except redis.WatchError:
+                    continue  # retry
+
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
+
     return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
 
 if __name__ == '__main__':

@@ -91,7 +91,6 @@ def log(kv_pairs: dict):
         for (k, v) in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
 
-
 @app.post('/create_user')
 def create_user():
     key = str(uuid.uuid4())
@@ -147,26 +146,43 @@ def pay(user_id: str, order_id: str, amount: int):
     amount = int(amount)
     payment_key = f"payment:{user_id}:{order_id}"
 
-    user_entry: UserValue = get_user_from_db(user_id)
-
-    if db.exists(payment_key):
-        return jsonify({"paid": True})
-
-    if user_entry.credit < amount:
-        abort(400, f"User {user_id} does not have enough credit.")
-
-    # SETNX to ensure one-time payment
-    if not db.set(payment_key, amount, nx=True):
-        return jsonify({"paid": True})
-
-    user_entry.credit -= amount
-    encoded_user = msgpack.encode(user_entry)
-
     try:
-        db.set(user_id, encoded_user)
-        log({user_id: encoded_user})
+        # Avoid double payment
+        if db.exists(payment_key):
+            return jsonify({"paid": True})
+
+        with db.pipeline() as pipe:
+            while True:
+                try:
+                    pipe.watch(user_id)
+
+                    user_bytes = pipe.get(user_id)
+                    if not user_bytes:
+                        pipe.unwatch()
+                        abort(400, f"User {user_id} not found!")
+
+                    user_entry = msgpack.decode(user_bytes, type=UserValue)
+
+                    if user_entry.credit < amount:
+                        pipe.unwatch()
+                        abort(400, f"User {user_id} does not have enough credit.")
+
+                    # Apply deduction
+                    user_entry.credit -= amount
+                    encoded_user = msgpack.encode(user_entry)
+
+                    pipe.multi()
+                    pipe.set(user_id, encoded_user)
+                    pipe.set(payment_key, amount, nx=True)  # mark payment done
+                    pipe.execute()
+
+                    log({user_id: encoded_user})
+                    break
+
+                except redis.WatchError:
+                    continue  # Retry on concurrent modification
+
     except redis.exceptions.RedisError:
-        db.delete(payment_key)
         return abort(400, DB_ERROR_STR)
 
     return jsonify({"paid": True})
@@ -174,23 +190,45 @@ def pay(user_id: str, order_id: str, amount: int):
 @app.post('/cancel/<user_id>/<order_id>')
 def cancel_payment(user_id: str, order_id: str):
     payment_key = f"payment:{user_id}:{order_id}"
+
     try:
-        amount = db.get(payment_key)
-        if amount is None:
-            return jsonify({"cancelled": False})
+        with db.pipeline() as pipe:
+            while True:
+                try:
+                    pipe.watch(user_id, payment_key)
 
-        amount = int(amount)
-        user_entry: UserValue = get_user_from_db(user_id)
-        user_entry.credit += amount
+                    amount_bytes = pipe.get(payment_key)
+                    if amount_bytes is None:
+                        pipe.unwatch()
+                        return jsonify({"cancelled": False})
 
-        encoded_user = msgpack.encode(user_entry)
-        db.set(user_id, encoded_user)
-        log({user_id: encoded_user})
-        db.delete(payment_key)
+                    amount = int(amount_bytes)
+                    user_bytes = pipe.get(user_id)
+
+                    if not user_bytes:
+                        pipe.unwatch()
+                        abort(400, f"User: {user_id} not found!")
+
+                    user_entry = msgpack.decode(user_bytes, type=UserValue)
+                    user_entry.credit += amount
+                    encoded_user = msgpack.encode(user_entry)
+
+                    pipe.multi()
+                    pipe.set(user_id, encoded_user)
+                    pipe.delete(payment_key)
+                    pipe.execute()
+
+                    log({user_id: encoded_user})
+                    break
+
+                except redis.WatchError:
+                    continue
+
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
 
     return jsonify({"cancelled": True})
+
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000, debug=True)
