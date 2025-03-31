@@ -72,9 +72,6 @@ def log(kv_pairs: dict):
 
 @app.post("/internal/recover-from-logs")
 def on_start():
-    if request.remote_addr != "172.18.0.3":
-        abort(403, DB_ERROR_STR)
-
     if os.path.exists(LOG_PATH):
         recover_from_logs()
         return jsonify({"msg": "Recovered from logs successfully"})

@@ -23,9 +23,6 @@ until curl -s -X POST http://stock-service:5000/internal/recover-from-logs; do
     echo "Stock-service is not ready yet. Retrying in 2s..."
     sleep 2
 done
-echo "Stock-service is up!"
-
-echo "Recovery triggered!"
 
 # 4. Bring Redis to foreground
 wait $REDIS_PID

@@ -8,7 +8,7 @@ import redis
 import requests
 
 from msgspec import msgpack, Struct
-from flask import Flask, jsonify, abort, Response
+from flask import Flask, jsonify, abort, Response, request
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
@@ -23,18 +23,6 @@ def recover_from_logs():
         for line in file:
             info = line.split(", ")
             db.set(info[0], base64.b64decode(info[1]))
-
-
-def on_start():
-    if os.path.exists(LOG_PATH):
-        recover_from_logs()
-    else:
-        try:
-            with open(LOG_PATH, 'x'):
-                pass
-            app.logger.debug(f"Log file created at: {LOG_PATH}")
-        except FileExistsError:
-            return abort(400, DB_ERROR_STR)
 
 
 app = Flask("payment-service")
@@ -90,6 +78,21 @@ def log(kv_pairs: dict):
     with open(LOG_PATH, 'a') as log_file:
         for (k, v) in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
+
+
+@app.post("/internal/recover-from-logs")
+def on_start():
+    if os.path.exists(LOG_PATH):
+        recover_from_logs()
+        return jsonify({"msg": "Recovered from logs successfully"})
+    else:
+        try:
+            with open(LOG_PATH, 'x'):
+                pass
+            app.logger.debug(f"Log file created at: {LOG_PATH}")
+            return jsonify({"msg": "Log file created successfully"})
+        except FileExistsError:
+            return abort(400, DB_ERROR_STR)
 
 
 @app.post('/create_user')
