@@ -16,7 +16,6 @@ class RabbitMQConnection:
 
         app.logger.debug("Trying to connect....")
 
-        """Attempt to connect to RabbitMQ with retry logic."""
         retries = 0
         while retries < self.max_retries:
             try:
@@ -43,7 +42,6 @@ class RabbitMQConnection:
     def declare_exchanges(self, exchanges):
         from app import app
 
-        """Declare multiple exchanges."""
         for exchange, exchange_type in exchanges.items():
             self.channel.exchange_declare(
                 exchange=exchange, exchange_type=exchange_type
@@ -55,15 +53,6 @@ class RabbitMQConnection:
     def declare_queues(self, queues):
         from app import app
 
-        """Declare multiple queues."""
         for queue in queues:
             self.channel.queue_declare(queue=queue)
             app.logger.debug(f"Declared queue '{queue}'.")
-
-    def close(self):
-        from app import app
-
-        """Close the connection."""
-        if self.connection and self.connection.is_open:
-            self.connection.close()
-            app.logger.debug("RabbitMQ connection closed.")

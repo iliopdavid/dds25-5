@@ -1,42 +1,43 @@
 from producer import OrderProducer
 from rabbitmq_connection import RabbitMQConnection
 import json
+import pika
 
 
 class OrderConsumer:
     def __init__(self):
-        from app import app
-
-        app.logger.debug("OrderConsumer initialized and ready to consume messages.")
-        self.queue_names = ["payment-processed", "stock-processed"]
         self.order_status = {}
+        self.queue_names = ["payment-processed", "stock-processed"]
+        self.connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq"))
+        self.channel = self.connection.channel()
 
-        # Initialize RabbitMQ connection
-        self.rabbitmq = RabbitMQConnection()
-        self.rabbitmq.declare_queues(self.queue_names)
+        for queue in self.queue_names:
+            self.channel.queue_declare(queue=queue)
+
+            self.channel.queue_bind(exchange="order-exchange", queue=queue)
 
         self.producer = OrderProducer()
 
+    # Start consuming messages
     def consume_messages(self):
         from app import app
 
-        """Start consuming messages from queues."""
         for queue in self.queue_names:
-            self.rabbitmq.channel.basic_consume(
+            self.channel.basic_consume(
                 queue=queue, on_message_callback=self.handle_message, auto_ack=True
             )
 
         app.logger.info("Waiting for messages. To exit press CTRL+C")
         try:
-            self.rabbitmq.channel.start_consuming()
+            self.channel.start_consuming()
         except KeyboardInterrupt:
             app.logger.info("Stopping consumer...")
-            self.rabbitmq.close()
+            self.cleanup()
 
+    # Handle incoming messages
     def handle_message(self, ch, method, properties, body):
         from app import app
 
-        """Process received messages."""
         try:
             message = json.loads(body.decode("utf-8"))
             topic = method.routing_key
@@ -48,10 +49,10 @@ class OrderConsumer:
         except json.JSONDecodeError as e:
             app.logger.error(f"Failed to decode message: {e}")
 
+    # handle the event notifying that the payment processing has been completed
     def handle_payment_processed(self, value):
         from app import complete_order, get_order_from_db
 
-        """Handle payment processing messages."""
         order_id = value["order_id"]
         payment_status = value["payment_status"]
         order_entry = get_order_from_db(order_id)
@@ -75,10 +76,10 @@ class OrderConsumer:
                 {"order_id": order_id, "items": order_entry.items},
             )
 
+    # handle the event notifying that the stock processing has been completed
     def handle_stock_updated(self, value):
         from app import complete_order, get_order_from_db
 
-        """Handle stock processing messages."""
         order_id = value["order_id"]
         stock_status = value["stock_status"]
         order_entry = get_order_from_db(order_id)
@@ -105,27 +106,27 @@ class OrderConsumer:
                 },
             )
 
+    # check if the order has been succesfully processed (both stock and payment processed)
     def _order_successfully_processed(self, order_id):
-        """Check if both payment and stock statuses are successful."""
         return (
             self.order_status[order_id]["payment_status"] == "SUCCESS"
             and self.order_status[order_id]["stock_status"] == "SUCCESS"
         )
 
+    # check if payment failed but stock succeeded.
     def _payment_failed_but_stock_succeeded(self, order_id):
-        """Check if payment failed but stock succeeded."""
         return (
             self.order_status[order_id]["payment_status"] == "FAILED"
             and self.order_status[order_id]["stock_status"] == "SUCCESS"
         )
 
+    # Check if stock failed but payment succeeded.
     def _stock_failed_but_payment_succeeded(self, order_id):
-        """Check if stock failed but payment succeeded."""
         return (
             self.order_status[order_id]["payment_status"] == "SUCCESS"
             and self.order_status[order_id]["stock_status"] == "FAILED"
         )
 
-    def close_connection(self):
-        """Close the RabbitMQ connection."""
-        self.rabbitmq.close()
+    def cleanup(self):
+        self.connection.close()
+        self.producer.close()
