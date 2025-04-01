@@ -1,55 +1,80 @@
-import time
-from kafka import KafkaProducer
 import json
+import pika
+from rabbitmq_connection import RabbitMQConnection
 
 
 class OrderProducer:
-
-    def __init__(self):
-        self.producer = KafkaProducer(
-            bootstrap_servers=["kafka:9092"],
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            acks="all",
-            retries=5,
-            request_timeout_ms=60000,  # Increase the timeout
-            batch_size=16384,  # Increase batch size if necessary
-            linger_ms=5,
-        )
-
-    def send_event(self, topic, key, value):
+    def __init__(self, max_retries=5, retry_delay=5):
         from app import app
 
-        app.logger.debug(
-            f"Attempting to send event to topic '{topic}' with key '{key}' and value '{value}'"
+        app.logger.debug("OrderProducer initialized and ready to send messages.")
+
+        self.rabbitmq = RabbitMQConnection(
+            max_retries=max_retries, retry_delay=retry_delay
         )
 
+        # Declare all necessary exchanges
+        self.rabbitmq.declare_exchanges(
+            {
+                "orders": "direct",
+                "order-status": "direct",
+                "order-created-payment": "direct",
+                "order-created-stock": "direct",
+            }
+        )
+
+    def send_event(self, exchange, routing_key, message):
+        """Send a message to a specified exchange with retry logic."""
+        from app import app
+
+        if not self.rabbitmq.channel or self.rabbitmq.channel.is_closed:
+            app.logger.error("RabbitMQ channel is closed. Reconnecting...")
+            self.rabbitmq._connect()
+
         try:
-            app.logger.debug(f"Sending message to Kafka topic '{topic}'")
-            self.producer.send(topic, key=key.encode("utf-8"), value=value)
-            app.logger.debug(f"Message sent to Kafka. Waiting for flush...")
-            # this flushing does not work
-            self.producer.flush(timeout=30)
-            app.logger.debug(f"Flush complete.")
-
+            # Create a new channel for this operation
+            with self.rabbitmq.connection.channel() as channel:
+                message_body = json.dumps(message)
+                channel.basic_publish(
+                    exchange=exchange,
+                    routing_key=routing_key,
+                    body=message_body,
+                    properties=pika.BasicProperties(
+                        delivery_mode=2  # Make message persistent
+                    ),
+                )
+                app.logger.debug(
+                    f"Message sent to exchange '{exchange}' with key '{routing_key}': {message_body}"
+                )
         except Exception as e:
-            # Log any exception that occurs during the send/flush process
-            app.logger.error(f"Error sending event to Kafka: {e}")
-            raise  # Optionally re-raise the exception if you want to propagate it
-
-        app.logger.debug(f"Event successfully sent to topic '{topic}'")
+            app.logger.error(f"Error sending event to RabbitMQ: {e}")
+            raise
 
     def send_order_created(self, order_id, user_id, total_amount):
+        """Notify other services that an order has been created."""
         message = {
             "order_id": order_id,
             "user_id": user_id,
             "total_amount": total_amount,
         }
-        self.send_event("orders", order_id, message)
+        self.send_event("orders", "order.created", message)
 
     def send_order_completed(self, order_id):
+        """Notify that an order is completed."""
         message = {"order_id": order_id, "status": "COMPLETED"}
-        self.send_event("order-status", order_id, message)
+        self.send_event("order-status", "order.completed", message)
 
     def send_order_failed(self, order_id, reason):
+        """Notify that an order has failed."""
         message = {"order_id": order_id, "status": "FAILED", "reason": reason}
-        self.send_event("order-status", order_id, message)
+        self.send_event("order-status", "order.failed", message)
+
+    def close_connection(self):
+        """Close the RabbitMQ connection safely."""
+        from app import app
+
+        try:
+            self.rabbitmq.close()
+            app.logger.debug("RabbitMQ connection closed successfully.")
+        except Exception as e:
+            app.logger.error(f"Error closing RabbitMQ connection: {e}")

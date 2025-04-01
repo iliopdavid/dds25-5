@@ -4,7 +4,7 @@ import os
 import atexit
 import threading
 import uuid
-
+import pika
 import redis
 
 from msgspec import msgpack, Struct
@@ -71,15 +71,12 @@ class StockValue(Struct):
 
 
 def get_item_from_db(item_id: str) -> StockValue | None:
-    # get serialized data
     try:
         entry: bytes = db.get(item_id)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    # deserialize data if it exists else return null
     entry: StockValue | None = msgpack.decode(entry, type=StockValue) if entry else None
     if entry is None:
-        # if item does not exist in the database; abort
         abort(400, f"Item: {item_id} not found!")
     return entry
 
@@ -129,7 +126,6 @@ def find_item(item_id: str):
 @app.post("/add/<item_id>/<amount>")
 def add_stock(item_id: str, amount: int):
     item_entry: StockValue = get_item_from_db(item_id)
-    # update stock, serialize and update database
     item_entry.stock += int(amount)
     value = msgpack.encode(item_entry)
     try:
@@ -143,7 +139,6 @@ def add_stock(item_id: str, amount: int):
 @app.post("/subtract/<item_id>/<amount>")
 def remove_stock(item_id: str, amount: int):
     item_entry: StockValue = get_item_from_db(item_id)
-    # update stock, serialize and update database
     item_entry.stock -= int(amount)
     value = msgpack.encode(item_entry)
     app.logger.debug(f"Item: {item_id} stock updated to: {item_entry.stock}")

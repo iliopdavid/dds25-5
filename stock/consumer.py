@@ -1,31 +1,40 @@
-from kafka import KafkaConsumer
 import json
+import pika
 from msgspec import msgpack
 from producer import StockProducer
 
 
 class StockConsumer:
     def __init__(self):
-        self.topics = ["order-created-stock", "payment-failure"]
-        self.group_id = "stock"
-
-        # Initialize Kafka consumer
-        self.consumer = KafkaConsumer(
-            *self.topics,
-            bootstrap_servers=["kafka:9092"],
-            group_id=self.group_id,
-            auto_offset_reset="earliest",
-            value_deserializer=lambda x: json.loads(x.decode("utf-8")),
+        self.queues = ["order-created-stock", "payment-failure"]
+        self.connection = pika.BlockingConnection(
+            pika.ConnectionParameters(host="rabbitmq")
         )
+        self.channel = self.connection.channel()
+
+        # Declare queues
+        for queue in self.queues:
+            self.channel.queue_declare(queue=queue, durable=True)
 
         self.producer = StockProducer()
 
     def consume_messages(self):
-        for message in self.consumer:
-            if message.topic == "order-created-stock":
-                self.process_stock(message.value)
-            elif message.topic == "payment-failure":
-                self.handle_payment_failure(message.value)
+        for queue in self.queues:
+            self.channel.basic_consume(
+                queue=queue, on_message_callback=self.callback, auto_ack=True
+            )
+
+        print("Waiting for messages. To exit, press CTRL+C")
+        self.channel.start_consuming()
+
+    def callback(self, ch, method, properties, body):
+        message = json.loads(body)
+        queue_name = method.routing_key
+
+        if queue_name == "order-created-stock":
+            self.process_stock(message)
+        elif queue_name == "payment-failure":
+            self.handle_payment_failure(message)
 
     def process_stock(self, stock_data):
         from app import get_item_from_db, log, db, app

@@ -8,7 +8,7 @@ import uuid
 
 import redis
 import requests
-
+import pika
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
@@ -230,27 +230,22 @@ def checkout(order_id: str):
 
     app.logger.debug(f"Sending event out to payment for {order_id}")
 
-    # Send an event to payment service to reduct credit
-    # todo: use partitions based on user id?
+    # Send an event to payment service to deduct credit
     producer.send_event(
         "order-created-payment",
         "a",
         {"user_id": order_entry.user_id, "total_amount": order_entry.total_cost},
     )
 
-    app.logger.debug(f"Event sent out to payment for {order_id}")
-
     # Send an event to the Stock Service to reduce stock
     producer.send_event(
         "order-created-stock",
-        key=order_entry.user_id,
-        value={
+        order_entry.user_id,
+        {
             "order_id": order_id,
             "items": order_entry.items,
         },
     )
-
-    app.logger.debug(f"Event sent out to stock for {order_id}")
 
     return jsonify({"message": "Order checkout initiated"}), 200
 
