@@ -2,7 +2,7 @@
 
 # 0. Load environment variables from file
 set -o allexport
-source /usr/local/bin/stock_redis.env
+source /usr/local/bin/payment_redis.env
 set +o allexport
 
 # 1. Start Redis in the background
@@ -17,10 +17,10 @@ until REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT
 done
 echo "Redis is up!"
 
-# 3. Wait until stock-service is up and respond to recovery endpoint
-echo "Waiting for stock-service to be available..."
-until curl -s -X POST http://stock-service:5000/internal/recover-from-logs; do
-    echo "Stock-service is not ready yet. Retrying in 2s..."
+# 3. Wait until payment-service is up and respond to recovery endpoint
+echo "Waiting for payment-service to be available..."
+until curl -s -X POST http://payment-service:5000/internal/recover-from-logs; do
+    echo "Payment-service is not ready yet. Retrying in 2s..."
     sleep 2
 done
 

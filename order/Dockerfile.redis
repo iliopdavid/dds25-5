@@ -1,0 +1,10 @@
+FROM redis:7.2-bookworm
+
+# Install curl
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+# Add your wrapper script into the image
+COPY start_redis_with_recovery.sh /usr/local/bin/start_redis_with_recovery.sh
+RUN chmod +x /usr/local/bin/start_redis_with_recovery.sh
+
+ENTRYPOINT ["/usr/local/bin/start_redis_with_recovery.sh"]
