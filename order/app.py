@@ -83,6 +83,7 @@ def log(kv_pairs: dict):
         for (k, v) in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
 
+
 @app.post('/create/<user_id>')
 def create_order(user_id: str):
     key = str(uuid.uuid4())
@@ -136,13 +137,15 @@ def find_order(order_id: str):
     )
 
 
-def send_post_request(url: str):
-    try:
-        response = requests.post(url)
-    except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
-    else:
-        return response
+def send_post_request(url, retries=3, delay=0.05):
+    for _ in range(retries):
+        try:
+            r = requests.post(url)
+            if r.status_code == 200:
+                return r
+        except:
+            time.sleep(delay)
+    raise Exception(f"An error occurred posting to {url}")
 
 
 def send_get_request(url: str):
@@ -177,52 +180,6 @@ def add_item(order_id: str, item_id: str, quantity: int):
                     status=200)
 
 
-def rollback_stock(removed_items: dict[str, int]):
-    for item_id, quantity in removed_items.items():
-        send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
-
-
-# @app.post('/checkout/<order_id>')
-# def checkout(order_id: str):
-#     app.logger.debug(f"Checking out {order_id}")
-#     order_entry: OrderValue = get_order_from_db(order_id)
-#     # The removed items will contain the items that we already have successfully subtracted stock from
-#     # for rollback purposes.
-#     removed_items: dict[str, int] = {}
-#     for item_id, quantity in order_entry.items.items():
-#         stock_reply = send_post_request(f"{GATEWAY_URL}/stock/subtract/{item_id}/{quantity}")
-#         if stock_reply.status_code != 200:
-#             # If one item does not have enough stock we need to rollback
-#             rollback_stock(removed_items)
-#             abort(400, f'Out of stock on item_id: {item_id}')
-#         removed_items[item_id] = quantity
-#     user_reply = send_post_request(f"{GATEWAY_URL}/payment/pay/{order_entry.user_id}/{order_entry.total_cost}")
-#     if user_reply.status_code != 200:
-#         # If the user does not have enough credit we need to rollback all the item stock subtractions
-#         rollback_stock(removed_items)
-#         abort(400, "User out of credit")
-#     order_entry.paid = True
-#     value = msgpack.encode(order_entry)
-#     try:
-#         log({order_id: value})
-#         db.set(order_id, value)
-#     except redis.exceptions.RedisError:
-#         return abort(400, DB_ERROR_STR)
-#     app.logger.debug("Checkout successful")
-#     return Response("Checkout successful", status=200)
-
-def safe_post(url, retries=3, delay=0.05):
-    for _ in range(retries):
-        try:
-            r = requests.post(url)
-            if r.status_code == 200:
-                time.sleep(0.01)  # tiny buffer to let other services catch up
-                return r
-        except:
-            time.sleep(delay)
-    return None
-
-
 @app.post('/checkout/<order_id>')
 def checkout(order_id: str):
     app.logger.debug(f"Checking out order: {order_id}")
@@ -234,17 +191,13 @@ def checkout(order_id: str):
     try:
         # Step 1: Try subtracting stock
         for item_id, quantity in order_entry.items.items():
-            stock_response = safe_post(f"{STOCK_URL}/subtract/{item_id}/{quantity}")
-            if not stock_response:
-                raise Exception(f"Stock error on item: {item_id}")
+            send_post_request(f"{STOCK_URL}/subtract/{item_id}/{quantity}")
             removed_items[item_id] = quantity
 
         # Step 2: Try payment
-        payment_response = safe_post(
+        send_post_request(
             f"{PAYMENT_URL}/pay/{order_entry.user_id}/{order_id}/{order_entry.total_cost}"
         )
-        if not payment_response:
-            raise Exception("Payment error")
         payment_successful = True
 
         # Step 3: Mark order as paid
@@ -258,16 +211,18 @@ def checkout(order_id: str):
     except Exception as e:
         app.logger.error(f"[CHECKOUT FAILED] {e}")
 
-        # Compensation
+        # Stock rollback
         for item_id, quantity in removed_items.items():
-            safe_post(f"{STOCK_URL}/add/{item_id}/{quantity}")
+            send_post_request(f"{STOCK_URL}/add/{item_id}/{quantity}")
             app.logger.info(f"[ROLLBACK] Stock for {item_id}")
 
+        # Payment rollback
         if payment_successful:
-            safe_post(f"{PAYMENT_URL}/cancel/{order_entry.user_id}/{order_id}")
+            send_post_request(f"{PAYMENT_URL}/cancel/{order_entry.user_id}/{order_id}")
             app.logger.info(f"[ROLLBACK] Payment for user {order_entry.user_id}")
 
         return Response(f"Checkout failed and compensated: {e}", status=400)
+
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=8000, debug=True)
