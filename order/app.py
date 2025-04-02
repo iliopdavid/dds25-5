@@ -137,11 +137,12 @@ def find_order(order_id: str):
     )
 
 
-def send_post_request(url, retries=3, delay=0.05):
+def send_post_request(url, retries=10, delay=0.05, json=None):
     for _ in range(retries):
         try:
-            r = requests.post(url)
+            r = requests.post(url, json=json)
             if r.status_code == 200:
+                time.sleep(0.01)
                 return r
         except:
             time.sleep(delay)
@@ -183,6 +184,7 @@ def add_item(order_id: str, item_id: str, quantity: int):
 @app.post('/checkout/<order_id>')
 def checkout(order_id: str):
     app.logger.debug(f"Checking out order: {order_id}")
+    
     order_entry: OrderValue = get_order_from_db(order_id)
 
     removed_items: dict[str, int] = {}
@@ -196,7 +198,8 @@ def checkout(order_id: str):
 
         # Step 2: Try payment
         send_post_request(
-            f"{PAYMENT_URL}/pay/{order_entry.user_id}/{order_id}/{order_entry.total_cost}"
+            f"{PAYMENT_URL}/pay/{order_entry.user_id}/{order_id}/{order_entry.total_cost}",
+            json={"order_id": order_id}
         )
         payment_successful = True
 
@@ -218,7 +221,8 @@ def checkout(order_id: str):
 
         # Payment rollback
         if payment_successful:
-            send_post_request(f"{PAYMENT_URL}/cancel/{order_entry.user_id}/{order_id}")
+            send_post_request(f"{PAYMENT_URL}/cancel/{order_entry.user_id}/{order_id}",
+                              json={"order_id": order_id})
             app.logger.info(f"[ROLLBACK] Payment for user {order_entry.user_id}")
 
         return Response(f"Checkout failed and compensated: {e}", status=400)

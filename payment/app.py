@@ -8,7 +8,7 @@ import redis
 import requests
 
 from msgspec import msgpack, Struct
-from flask import Flask, jsonify, abort, Response
+from flask import Flask, jsonify, abort, Response, request
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
@@ -144,6 +144,13 @@ def add_credit(user_id: str, amount: int):
 @app.post('/pay/<user_id>/<order_id>/<amount>')
 def pay(user_id: str, order_id: str, amount: int):
     amount = int(amount)
+
+    data = request.get_json()
+    if not data or "order_id" not in data:
+        abort(400, "Missing order_id in request body")
+
+    order_id = data["order_id"]
+
     payment_key = f"payment:{user_id}:{order_id}"
 
     try:
@@ -189,6 +196,12 @@ def pay(user_id: str, order_id: str, amount: int):
 
 @app.post('/cancel/<user_id>/<order_id>')
 def cancel_payment(user_id: str, order_id: str):
+    data = request.get_json()
+    if not data or "order_id" not in data:
+        abort(400, "Missing order_id in request body")
+
+    order_id = data["order_id"]
+
     payment_key = f"payment:{user_id}:{order_id}"
 
     try:
