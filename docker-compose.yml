@@ -23,8 +23,10 @@ services:
     env_file:
       - env/order_redis.env
     depends_on:
-      - order-db
-      - rabbitmq
+      order-db:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
 
   order-db:
     image: redis:7.2-bookworm
@@ -39,8 +41,10 @@ services:
     env_file:
       - env/stock_redis.env
     depends_on:
-      - stock-db
-      - rabbitmq
+      stock-db:
+        condition: service_started
+      rabbitmq: 
+        condition: service_healthy
 
   stock-db:
     image: redis:7.2-bookworm
@@ -55,8 +59,10 @@ services:
     env_file:
       - env/payment_redis.env
     depends_on:
-      - payment-db
-      - rabbitmq
+      payment-db:
+        condition: service_started
+      rabbitmq: 
+        condition: service_healthy
 
   payment-db:
     image: redis:7.2-bookworm
@@ -67,3 +73,9 @@ services:
     ports:
       - "5672:5672"
       - "15672:15672"
+    restart: always
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5

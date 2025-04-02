@@ -7,16 +7,15 @@ import pika
 class OrderConsumer:
     def __init__(self):
         self.order_status = {}
-        self.queue_names = ["payment-processed", "stock-processed"]
+        self.queue_names = ["payment.processed", "stock.processed"]
         self.connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq"))
         self.channel = self.connection.channel()
 
+        self.producer = OrderProducer()
+
         for queue in self.queue_names:
             self.channel.queue_declare(queue=queue)
-
-            self.channel.queue_bind(exchange="order-exchange", queue=queue)
-
-        self.producer = OrderProducer()
+            self.channel.queue_bind(exchange="order.exchange", queue=queue)
 
     # Start consuming messages
     def consume_messages(self):
@@ -42,16 +41,18 @@ class OrderConsumer:
             message = json.loads(body.decode("utf-8"))
             topic = method.routing_key
 
-            if topic == "payment-processed":
+            if topic == "payment.processed":
                 self.handle_payment_processed(message)
-            elif topic == "stock-processed":
+            elif topic == "stock.processed":
                 self.handle_stock_updated(message)
         except json.JSONDecodeError as e:
             app.logger.error(f"Failed to decode message: {e}")
 
     # handle the event notifying that the payment processing has been completed
     def handle_payment_processed(self, value):
-        from app import complete_order, get_order_from_db
+        from app import complete_order, get_order_from_db, app
+
+        app.logger.debug(f"value {value}")
 
         order_id = value["order_id"]
         payment_status = value["payment_status"]
@@ -71,8 +72,7 @@ class OrderConsumer:
         elif self._payment_failed_but_stock_succeeded(order_id):
             # Rollback stock service because payment failed
             self.producer.send_event(
-                "payment-failure",
-                "",
+                "payment.failure",
                 {"order_id": order_id, "items": order_entry.items},
             )
 
@@ -98,8 +98,7 @@ class OrderConsumer:
         elif self._stock_failed_but_payment_succeeded(order_id):
             # Rollback payment service because stock processing failed
             self.producer.send_event(
-                "stock-failure",
-                "",
+                "stock.failure",
                 {
                     "user_id": order_entry.user_id,
                     "total_amount": order_entry.total_cost,

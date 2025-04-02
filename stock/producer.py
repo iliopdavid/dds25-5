@@ -1,25 +1,27 @@
 import pika
 import json
-import uuid
 
 
 class StockProducer:
     def __init__(self):
         self.connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq"))
         self.channel = self.connection.channel()
-        self.channel.queue_declare(queue="stock-processed")
 
-    def send_stock_update(self, order_id: str, stock_status: str):
-        # Create the stock update message
-        message = {
-            "stock_id": str(uuid.uuid4()),
-            "order_id": order_id,
-            "stock_status": stock_status,
-        }
+        self.channel.exchange_declare(exchange="stock.exchange", exchange_type="direct")
 
-        # Send message to RabbitMQ queue
-        self.channel.basic_publish(
-            exchange="", routing_key="stock-processed", body=json.dumps(message)
-        )
+    def send_message(self, key, event_data):
+        try:
+            # Convert data to JSON and send to the RabbitMQ exchange
+            message = json.dumps(event_data)
+            self.channel.basic_publish(
+                exchange="stock.exchange",
+                routing_key=key,
+                body=message,
+            )
 
-        print(f"Sent stock update message: {message}")
+            print(f"Message sent: {event_data}")
+        except Exception as e:
+            print(f"Error sending message: {str(e)}")
+        # finally:
+        #     # Ensure that the message is properly sent
+        #     self.connection.close()

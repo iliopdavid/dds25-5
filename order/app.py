@@ -225,22 +225,19 @@ def rollback_stock(removed_items: dict[str, int]):
 
 @app.post("/checkout/<order_id>")
 def checkout(order_id: str):
-    app.logger.debug(f"Checking out {order_id}")
     order_entry: OrderValue = get_order_from_db(order_id)
 
-    app.logger.debug(f"Sending event out to payment for {order_id}")
-
-    # Send an event to payment service to deduct credit
-    producer.send_event(
-        "order-created-payment",
-        "a",
-        {"user_id": order_entry.user_id, "total_amount": order_entry.total_cost},
+    # Send an event for
+    # - Payment service to deduct credit
+    # - Stock Service to reduce stock
+    producer.send_checkout_called(
+        order_id, order_entry.user_id, order_entry.total_cost, order_entry.items
     )
 
     # Send an event to the Stock Service to reduce stock
     producer.send_event(
+        "order-exchange",
         "order-created-stock",
-        order_entry.user_id,
         {
             "order_id": order_id,
             "items": order_entry.items,
