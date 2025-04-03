@@ -55,6 +55,7 @@ atexit.register(close_db_connection)
 class UserValue(Struct):
     credit: int
 
+
 def send_post_request(url: str):
     try:
         response = requests.post(url)
@@ -71,6 +72,7 @@ def send_get_request(url: str):
         abort(400, REQ_ERROR_STR)
     else:
         return response
+
 
 def get_user_from_db(user_id: str) -> UserValue | None:
     try:
@@ -90,6 +92,7 @@ def log(kv_pairs: dict):
     with open(LOG_PATH, 'a') as log_file:
         for (k, v) in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
+
 
 @app.post('/create_user')
 def create_user():
@@ -126,6 +129,7 @@ def find_user(user_id: str):
             "credit": user_entry.credit
         }
     )
+
 
 @app.post('/add_funds/<user_id>/<amount>')
 def add_credit(user_id: str, amount: int):
@@ -193,6 +197,7 @@ def pay(user_id: str, order_id: str, amount: int):
         return abort(400, DB_ERROR_STR)
 
     return jsonify({"paid": True})
+
 
 @app.post('/cancel/<user_id>/<order_id>')
 def cancel_payment(user_id: str, order_id: str):

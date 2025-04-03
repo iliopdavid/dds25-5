@@ -18,7 +18,7 @@ LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
 
 def recover_from_logs():
-    with open(LOG_PATH, "r") as file:
+    with open(LOG_PATH, 'r') as file:
         for line in file:
             info = line.split(", ")
             db.set(info[0], base64.b64decode(info[1]))
@@ -29,7 +29,7 @@ def on_start():
         recover_from_logs()
     else:
         try:
-            with open(LOG_PATH, "x"):
+            with open(LOG_PATH, 'x'):
                 pass
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
@@ -37,7 +37,7 @@ def on_start():
 
 
 app = Flask("stock-service")
-app.logger.setLevel(logging.DEBUG)
+
 
 db: redis.Redis = redis.Redis(
     host=os.environ["REDIS_HOST"],
