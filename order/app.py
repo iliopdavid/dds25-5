@@ -218,7 +218,7 @@ def checkout(order_id: str):
 
         # Payment rollback
         if payment_successful:
-            send_post_request(f"{PAYMENT_URL}/cancel/{order_entry.user_id}/{order_id}",
+            send_post_request(f"{PAYMENT_URL}/cancel/{order_entry.user_id}",
                               json={"order_id": order_id})
             app.logger.info(f"[ROLLBACK] Payment for user {order_entry.user_id}")
 
