@@ -4,17 +4,19 @@ import os
 import atexit
 import random
 import uuid
-
+import time
 import redis
 import requests
 
 from msgspec import msgpack, Struct
-from flask import Flask, jsonify, abort, Response, request
+from flask import Flask, jsonify, abort, Response
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
 
-GATEWAY_URL = os.environ['GATEWAY_URL']
+GATEWAY_URL = os.environ["GATEWAY_URL"]
+STOCK_URL = os.environ["STOCK_URL"]
+PAYMENT_URL = os.environ["PAYMENT_URL"]
 
 LOG_DIR = "logging"
 LOG_FILENAME = "order_log.txt"
@@ -22,7 +24,7 @@ LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
 
 def recover_from_logs():
-    with open(LOG_PATH, 'r') as file:
+    with open(LOG_PATH, "r") as file:
         for line in file:
             info = line.split(", ")
             db.set(info[0], base64.b64decode(info[1]))
@@ -30,10 +32,12 @@ def recover_from_logs():
 
 app = Flask("order-service")
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
+db: redis.Redis = redis.Redis(
+    host=os.environ["REDIS_HOST"],
+    port=int(os.environ["REDIS_PORT"]),
+    password=os.environ["REDIS_PASSWORD"],
+    db=int(os.environ["REDIS_DB"]),
+)
 
 
 def close_db_connection():
@@ -65,9 +69,9 @@ def get_order_from_db(order_id: str) -> OrderValue | None:
 
 
 def log(kv_pairs: dict):
-    with open(LOG_PATH, 'a') as log_file:
+    with open(LOG_PATH, "a") as log_file:
         for (k, v) in kv_pairs.items():
-            log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
+            log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
 @app.post("/internal/recover-from-logs")
@@ -94,16 +98,11 @@ def create_order(user_id: str):
         db.set(key, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return jsonify({'order_id': key})
+    return jsonify({"order_id": key})
 
 
-@app.post('/batch_init/<n>/<n_items>/<n_users>/<item_price>')
+@app.post('/batch_init/<int:n>/<int:n_items>/<int:n_users>/<int:item_price>')
 def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
-    n = int(n)
-    n_items = int(n_items)
-    n_users = int(n_users)
-    item_price = int(item_price)
-
     def generate_entry() -> OrderValue:
         user_id = random.randint(0, n_users - 1)
         item1_id = random.randint(0, n_items - 1)
@@ -138,13 +137,16 @@ def find_order(order_id: str):
     )
 
 
-def send_post_request(url: str):
-    try:
-        response = requests.post(url)
-    except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
-    else:
-        return response
+def send_post_request(url, retries=10, delay=0.05, json=None):
+    for _ in range(retries):
+        try:
+            r = requests.post(url, json=json)
+            if r.status_code == 200:
+                time.sleep(0.01)
+                return r
+        except:
+            time.sleep(delay)
+    raise Exception(f"An error occurred posting to {url}")
 
 
 def send_get_request(url: str):
@@ -156,7 +158,7 @@ def send_get_request(url: str):
         return response
 
 
-@app.post('/addItem/<order_id>/<item_id>/<quantity>')
+@app.post('/addItem/<order_id>/<item_id>/<int:quantity>')
 def add_item(order_id: str, item_id: str, quantity: int):
     order_entry: OrderValue = get_order_from_db(order_id)
     item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
@@ -165,10 +167,10 @@ def add_item(order_id: str, item_id: str, quantity: int):
         abort(400, f"Item: {item_id} does not exist!")
     item_json: dict = item_reply.json()
     if item_id in order_entry.items:
-        order_entry.items[item_id] += int(quantity)
+        order_entry.items[item_id] += quantity
     else:
-        order_entry.items[item_id] = int(quantity)
-    order_entry.total_cost += int(quantity) * item_json["price"]
+        order_entry.items[item_id] = quantity
+    order_entry.total_cost += quantity * item_json["price"]
     value = msgpack.encode(order_entry)
     try:
         log({order_id: value})
@@ -179,44 +181,55 @@ def add_item(order_id: str, item_id: str, quantity: int):
                     status=200)
 
 
-def rollback_stock(removed_items: dict[str, int]):
-    for item_id, quantity in removed_items.items():
-        send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
-
-
 @app.post('/checkout/<order_id>')
 def checkout(order_id: str):
-    app.logger.debug(f"Checking out {order_id}")
+    app.logger.debug(f"Checking out order: {order_id}")
+    
     order_entry: OrderValue = get_order_from_db(order_id)
-    # The removed items will contain the items that we already have successfully subtracted stock from
-    # for rollback purposes.
+
+    if order_entry.paid:
+        return Response(f"Order: {order_id} already paid", status=200)
+
     removed_items: dict[str, int] = {}
-    for item_id, quantity in order_entry.items.items():
-        stock_reply = send_post_request(f"{GATEWAY_URL}/stock/subtract/{item_id}/{quantity}")
-        if stock_reply.status_code != 200:
-            # If one item does not have enough stock we need to rollback
-            rollback_stock(removed_items)
-            abort(400, f'Out of stock on item_id: {item_id}')
-        removed_items[item_id] = quantity
-    user_reply = send_post_request(f"{GATEWAY_URL}/payment/pay/{order_entry.user_id}/{order_entry.total_cost}")
-    if user_reply.status_code != 200:
-        # If the user does not have enough credit we need to rollback all the item stock subtractions
-        rollback_stock(removed_items)
-        abort(400, "User out of credit")
-    order_entry.paid = True
-    value = msgpack.encode(order_entry)
+    payment_successful = False
+
     try:
+        # Step 1: Try subtracting stock
+        for item_id, quantity in order_entry.items.items():
+            send_post_request(f"{STOCK_URL}/subtract/{item_id}/{quantity}")
+            removed_items[item_id] = quantity
+
+        # Step 2: Try payment
+        send_post_request(f"{PAYMENT_URL}/pay/{order_entry.user_id}/{order_entry.total_cost}")
+        payment_successful = True
+
+        # Step 3: Mark order as paid
+        order_entry.paid = True
+        value = msgpack.encode(order_entry)
         log({order_id: value})
         db.set(order_id, value)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    app.logger.debug("Checkout successful")
-    return Response("Checkout successful", status=200)
+        app.logger.debug("Checkout successful")
+        return Response("Checkout successful", status=200)
+
+    except Exception as e:
+        app.logger.error(f"[CHECKOUT FAILED] {e}")
+
+        # Stock rollback
+        for item_id, quantity in removed_items.items():
+            send_post_request(f"{STOCK_URL}/add/{item_id}/{quantity}")
+            app.logger.info(f"[ROLLBACK] Stock for {item_id}")
+
+        # Payment rollback
+        if payment_successful:
+            send_post_request(f"{PAYMENT_URL}/add_funds/{order_entry.user_id}/{order_entry.total_cost}")
+            app.logger.info(f"[ROLLBACK] Payment for user {order_entry.user_id}")
+
+        return Response(f"Checkout failed and compensated: {e}", status=400)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)

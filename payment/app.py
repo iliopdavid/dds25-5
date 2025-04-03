@@ -8,7 +8,7 @@ import redis
 import requests
 
 from msgspec import msgpack, Struct
-from flask import Flask, jsonify, abort, Response, request
+from flask import Flask, jsonify, abort, Response
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
@@ -19,7 +19,7 @@ LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
 
 def recover_from_logs():
-    with open(LOG_PATH, 'r') as file:
+    with open(LOG_PATH, "r") as file:
         for line in file:
             info = line.split(", ")
             db.set(info[0], base64.b64decode(info[1]))
@@ -27,10 +27,12 @@ def recover_from_logs():
 
 app = Flask("payment-service")
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
+db: redis.Redis = redis.Redis(
+    host=os.environ["REDIS_HOST"],
+    port=int(os.environ["REDIS_PORT"]),
+    password=os.environ["REDIS_PASSWORD"],
+    db=int(os.environ["REDIS_DB"]),
+)
 
 
 def close_db_connection():
@@ -42,6 +44,7 @@ atexit.register(close_db_connection)
 
 class UserValue(Struct):
     credit: int
+
 
 def send_post_request(url: str):
     try:
@@ -60,6 +63,7 @@ def send_get_request(url: str):
     else:
         return response
 
+
 def get_user_from_db(user_id: str) -> UserValue | None:
     try:
         # get serialized data
@@ -75,9 +79,9 @@ def get_user_from_db(user_id: str) -> UserValue | None:
 
 
 def log(kv_pairs: dict):
-    with open(LOG_PATH, 'a') as log_file:
+    with open(LOG_PATH, "a") as log_file:
         for (k, v) in kv_pairs.items():
-            log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
+            log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
 @app.post("/internal/recover-from-logs")
@@ -104,13 +108,11 @@ def create_user():
         db.set(key, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return jsonify({'user_id': key})
+    return jsonify({"user_id": key})
 
 
-@app.post('/batch_init/<n>/<starting_money>')
+@app.post('/batch_init/<int:n>/<int:starting_money>')
 def batch_init_users(n: int, starting_money: int):
-    n = int(n)
-    starting_money = int(starting_money)
     kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(UserValue(credit=starting_money))
                                   for i in range(n)}
     try:
@@ -132,11 +134,11 @@ def find_user(user_id: str):
     )
 
 
-@app.post('/add_funds/<user_id>/<amount>')
+@app.post('/add_funds/<user_id>/<int:amount>')
 def add_credit(user_id: str, amount: int):
     user_entry: UserValue = get_user_from_db(user_id)
     # update credit, serialize and update database
-    user_entry.credit += int(amount)
+    user_entry.credit += amount
     value = msgpack.encode(user_entry)
     try:
         log({user_id: value})
@@ -146,26 +148,63 @@ def add_credit(user_id: str, amount: int):
     return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
 
 
-@app.post('/pay/<user_id>/<amount>')
-def remove_credit(user_id: str, amount: int):
-    app.logger.debug(f"Removing {amount} credit from user: {user_id}")
-    user_entry: UserValue = get_user_from_db(user_id)
-    # update credit, serialize and update database
-    user_entry.credit -= int(amount)
-    value = msgpack.encode(user_entry)
-    if user_entry.credit < 0:
-        abort(400, f"User: {user_id} credit cannot get reduced below zero!")
+@app.post('/pay/<user_id>/<int:amount>')
+def pay(user_id: str, amount: int):
+    """
+    Based on:
+        Pipelines and transactions. (n.d.). Redis Docs. https://redis.io/docs/latest/develop/clients/redis-py/transpipe/
+
+    :param user_id:
+    :param amount:
+    :return:
+    """
     try:
-        log({user_id: value})
-        db.set(user_id, value)
+        with db.pipeline() as pipe:
+            # Repeat until successful.
+            while True:
+                try:
+                    # Watch the key we are about to change.
+                    pipe.watch(user_id)
+
+                    # The pipeline executes commands directly (instead of buffering them) from immediately after the
+                    # `watch()` call until we begin the transaction.
+                    user_bytes = pipe.get(user_id)
+                    if not user_bytes:
+                        pipe.unwatch()
+                        abort(400, f"User {user_id} not found!")
+
+                    user_entry = msgpack.decode(user_bytes, type=UserValue)
+
+                    if user_entry.credit < amount:
+                        pipe.unwatch()
+                        abort(400, f"User {user_id} does not have enough credit.")
+
+                    # Apply deduction
+                    user_entry.credit -= amount
+                    encoded_user = msgpack.encode(user_entry)
+
+                    # Start the transaction, which will enable buffering again for the remaining commands.
+                    pipe.multi()
+                    pipe.set(user_id, encoded_user)
+                    pipe.execute()
+
+                    log({user_id: encoded_user})
+
+                    # The transaction succeeded, so break out of the loop.
+                    break
+                except redis.WatchError:
+                    # The transaction failed, so continue with the next attempt.
+                    continue
+
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
+
+    return jsonify({"paid": True})
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
