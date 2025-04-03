@@ -1,8 +1,7 @@
 import requests
 
-ORDER_URL = "http://127.0.0.1:8000"
-STOCK_URL = "http://127.0.0.1:8000"
-PAYMENT_URL = "http://127.0.0.1:8000"
+ORDER_URL = STOCK_URL = PAYMENT_URL = "http://127.0.0.1:8000"
+
 
 ########################################################################################################################
 #   STOCK MICROSERVICE FUNCTIONS
@@ -26,12 +25,8 @@ def subtract_stock(item_id: str, amount: int) -> int:
 ########################################################################################################################
 #   PAYMENT MICROSERVICE FUNCTIONS
 ########################################################################################################################
-def payment_pay(user_id: str, order_id: str, amount: int) -> int:
-    return requests.post(f"{PAYMENT_URL}/payment/pay/{user_id}/{order_id}/{amount}").status_code
-
-
-def payment_cancel(user_id: str, order_id: str) -> int:
-    return requests.post(f"{PAYMENT_URL}/payment/cancel/{user_id}/{order_id}").status_code
+def payment_pay(user_id: str, amount: int) -> int:
+    return requests.post(f"{PAYMENT_URL}/payment/pay/{user_id}/{amount}").status_code
 
 
 def create_user() -> dict:
