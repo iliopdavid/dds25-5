@@ -19,7 +19,7 @@ LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
 
 def recover_from_logs():
-    with open(LOG_PATH, 'r') as file:
+    with open(LOG_PATH, "r") as file:
         for line in file:
             info = line.split(", ")
             db.set(info[0], base64.b64decode(info[1]))
@@ -30,7 +30,7 @@ def on_start():
         recover_from_logs()
     else:
         try:
-            with open(LOG_PATH, 'x'):
+            with open(LOG_PATH, "x"):
                 pass
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
@@ -39,10 +39,12 @@ def on_start():
 
 app = Flask("payment-service")
 
-db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
-                              port=int(os.environ['REDIS_PORT']),
-                              password=os.environ['REDIS_PASSWORD'],
-                              db=int(os.environ['REDIS_DB']))
+db: redis.Redis = redis.Redis(
+    host=os.environ["REDIS_HOST"],
+    port=int(os.environ["REDIS_PORT"]),
+    password=os.environ["REDIS_PASSWORD"],
+    db=int(os.environ["REDIS_DB"]),
+)
 
 
 def close_db_connection():
@@ -89,9 +91,10 @@ def get_user_from_db(user_id: str) -> UserValue | None:
 
 
 def log(kv_pairs: dict):
-    with open(LOG_PATH, 'a') as log_file:
+    with open(LOG_PATH, "a") as log_file:
         for (k, v) in kv_pairs.items():
-            log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
+            log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
+
 
 
 @app.post('/create_user')
@@ -103,7 +106,7 @@ def create_user():
         db.set(key, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return jsonify({'user_id': key})
+    return jsonify({"user_id": key})
 
 
 @app.post('/batch_init/<n>/<starting_money>')
@@ -248,9 +251,9 @@ def cancel_payment(user_id: str, order_id: str):
     return jsonify({"cancelled": True})
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
