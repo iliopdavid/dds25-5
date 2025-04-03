@@ -6,7 +6,7 @@ from producer import StockProducer
 
 class StockConsumer:
     def __init__(self):
-        self.queues = ["order.checkout", "payment.failure"]
+        self.queues = ["stock_queue"]
         self.connection = pika.BlockingConnection(
             pika.ConnectionParameters(host="rabbitmq")
         )
@@ -14,21 +14,39 @@ class StockConsumer:
 
         self.producer = StockProducer()
 
+        # make sure that the exchange exists
+        self.channel.exchange_declare(exchange="order.exchange", exchange_type="topic")
+
         # Declare queues
         for queue in self.queues:
-            self.channel.queue_declare(queue=queue, durable=True)
-            self.channel.queue_bind(exchange="order.exchange", queue=queue)
-
-    def consume_messages(self):
-        for queue in self.queues:
-            self.channel.basic_consume(
-                queue=queue, on_message_callback=self.callback, auto_ack=True
+            # for broadcasting event
+            self.channel.queue_declare(queue=queue)
+            self.channel.queue_bind(
+                exchange="order.exchange", queue=queue, routing_key="order.checkout"
+            )
+            # for stock specific event
+            self.channel.queue_bind(
+                exchange="order.exchange",
+                queue=queue,
+                routing_key="order.stock.#",
             )
 
-        print("Waiting for messages. To exit, press CTRL+C")
-        self.channel.start_consuming()
+    def consume_messages(self):
+        from app import app
 
-    def callback(self, ch, method, properties, body):
+        for queue in self.queues:
+            self.channel.basic_consume(
+                queue=queue, on_message_callback=self.handle_message, auto_ack=True
+            )
+
+        app.logger.info("Waiting for messages. To exit press CTRL+C")
+        try:
+            self.channel.start_consuming()
+        except KeyboardInterrupt:
+            app.logger.info("Stopping consumer...")
+            self.cleanup()
+
+    def handle_message(self, ch, method, properties, body):
         from app import app
 
         message = json.loads(body)
@@ -56,6 +74,9 @@ class StockConsumer:
                 value = msgpack.encode(item_entry)
 
                 if item_entry.stock < 0:
+                    app.logger.debug(
+                        f"item with id {item_id}'s stock is reduced to below 0"
+                    )
                     self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
                     return {
                         "status": "failure",
@@ -64,6 +85,9 @@ class StockConsumer:
 
                 log({item_id: value})
                 db.set(item_id, value)
+                app.logger.debug(
+                    f"item entry with id {item_id}'s stock is reduced by {quantity} to {item_entry.stock}"
+                )
 
                 # If everything succeeds, send a success event
                 self.send_stock_processed_event(order_id, user_id, "SUCCESS", items)
@@ -87,7 +111,7 @@ class StockConsumer:
             "status": status,
             "items": items,
         }
-        self.producer.send_message("payment.processed", event_data)
+        self.producer.send_message("stock.processed", event_data)
 
     def handle_payment_failure(self, payment_failure_data):
         order_id = payment_failure_data.get("order_id")

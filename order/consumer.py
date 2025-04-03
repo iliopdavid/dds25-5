@@ -1,5 +1,4 @@
 from producer import OrderProducer
-from rabbitmq_connection import RabbitMQConnection
 import json
 import pika
 
@@ -7,15 +6,31 @@ import pika
 class OrderConsumer:
     def __init__(self):
         self.order_status = {}
-        self.queue_names = ["payment.processed", "stock.processed"]
+        self.queue_names = ["order_queue"]
         self.connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq"))
         self.channel = self.connection.channel()
 
         self.producer = OrderProducer()
 
+        # make sure that the exchanges exists
+        self.channel.exchange_declare(exchange="stock.exchange", exchange_type="direct")
+        self.channel.exchange_declare(
+            exchange="payment.exchange", exchange_type="direct"
+        )
+
         for queue in self.queue_names:
             self.channel.queue_declare(queue=queue)
-            self.channel.queue_bind(exchange="order.exchange", queue=queue)
+            # has to add more bindings if we use more events
+            # telling the exchange: "Please send any message that arrives with the routing key exactly
+            # matching stock.processed to the order_queue"
+            self.channel.queue_bind(
+                exchange="stock.exchange", queue=queue, routing_key="stock.processed"
+            )
+            self.channel.queue_bind(
+                exchange="payment.exchange",
+                queue=queue,
+                routing_key="payment.processed",
+            )
 
     # Start consuming messages
     def consume_messages(self):
@@ -52,10 +67,10 @@ class OrderConsumer:
     def handle_payment_processed(self, value):
         from app import complete_order, get_order_from_db, app
 
-        app.logger.debug(f"value {value}")
+        app.logger.debug(f"Consuming payment processed event with value {value}")
 
         order_id = value["order_id"]
-        payment_status = value["payment_status"]
+        payment_status = value["status"]
         order_entry = get_order_from_db(order_id)
 
         # Initialize order status if not already present
@@ -72,16 +87,18 @@ class OrderConsumer:
         elif self._payment_failed_but_stock_succeeded(order_id):
             # Rollback stock service because payment failed
             self.producer.send_event(
-                "payment.failure",
+                "order.payment.failure",
                 {"order_id": order_id, "items": order_entry.items},
             )
 
     # handle the event notifying that the stock processing has been completed
     def handle_stock_updated(self, value):
-        from app import complete_order, get_order_from_db
+        from app import complete_order, get_order_from_db, app
+
+        app.logger.debug(f"Consuming stock processed event with value {value}")
 
         order_id = value["order_id"]
-        stock_status = value["stock_status"]
+        stock_status = value["status"]
         order_entry = get_order_from_db(order_id)
 
         # Initialize order status if not already present
@@ -98,7 +115,7 @@ class OrderConsumer:
         elif self._stock_failed_but_payment_succeeded(order_id):
             # Rollback payment service because stock processing failed
             self.producer.send_event(
-                "stock.failure",
+                "order.stock.failure",
                 {
                     "user_id": order_entry.user_id,
                     "total_amount": order_entry.total_cost,

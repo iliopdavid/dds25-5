@@ -234,16 +234,6 @@ def checkout(order_id: str):
         order_id, order_entry.user_id, order_entry.total_cost, order_entry.items
     )
 
-    # Send an event to the Stock Service to reduce stock
-    producer.send_event(
-        "order-exchange",
-        "order-created-stock",
-        {
-            "order_id": order_id,
-            "items": order_entry.items,
-        },
-    )
-
     return jsonify({"message": "Order checkout initiated"}), 200
 
 

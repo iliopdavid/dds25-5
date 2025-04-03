@@ -12,7 +12,7 @@ class OrderProducer:
         #     max_retries=max_retries, retry_delay=retry_delay
         # )
 
-        self.channel.exchange_declare(exchange="order.exchange", exchange_type="direct")
+        self.channel.exchange_declare(exchange="order.exchange", exchange_type="topic")
 
     def send_event(self, routing_key, message):
         from app import app

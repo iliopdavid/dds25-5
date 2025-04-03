@@ -15,6 +15,8 @@ class PaymentProducer:
 
     # Send message to RabbitMQ exchange
     def send_message(self, key, event_data):
+        from app import app
+
         try:
             # Convert data to JSON and send to the RabbitMQ exchange
             message = json.dumps(event_data)
@@ -24,7 +26,9 @@ class PaymentProducer:
                 body=message,
             )
 
-            print(f"Message sent: {event_data}")
+            app.logger.debug(
+                f"Message sent to exchange 'payment.exchange' with key '{key}': {message}"
+            )
         except Exception as e:
             print(f"Error sending message: {str(e)}")
         # finally:
