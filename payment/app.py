@@ -147,6 +147,14 @@ def add_credit(user_id: str, amount: int):
 
 @app.post('/pay/<user_id>/<int:amount>')
 def pay(user_id: str, amount: int):
+    """
+    Based on:
+        Pipelines and transactions. (n.d.). Redis Docs. https://redis.io/docs/latest/develop/clients/redis-py/transpipe/
+
+    :param user_id:
+    :param amount:
+    :return:
+    """
     data = request.get_json()
     if not data or "order_id" not in data:
         abort(400, "Missing order_id in request body")
@@ -161,10 +169,14 @@ def pay(user_id: str, amount: int):
             return jsonify({"paid": True})
 
         with db.pipeline() as pipe:
+            # Repeat until successful.
             while True:
                 try:
+                    # Watch the key we are about to change.
                     pipe.watch(user_id)
 
+                    # The pipeline executes commands directly (instead of buffering them) from immediately after the
+                    # `watch()` call until we begin the transaction.
                     user_bytes = pipe.get(user_id)
                     if not user_bytes:
                         pipe.unwatch()
@@ -180,16 +192,19 @@ def pay(user_id: str, amount: int):
                     user_entry.credit -= amount
                     encoded_user = msgpack.encode(user_entry)
 
+                    # Start the transaction, which will enable buffering again for the remaining commands.
                     pipe.multi()
                     pipe.set(user_id, encoded_user)
                     pipe.set(payment_key, amount, nx=True)  # mark payment done
                     pipe.execute()
 
                     log({user_id: encoded_user})
-                    break
 
+                    # The transaction succeeded, so break out of the loop.
+                    break
                 except redis.WatchError:
-                    continue  # Retry on concurrent modification
+                    # The transaction failed, so continue with the next attempt.
+                    continue
 
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
@@ -199,6 +214,13 @@ def pay(user_id: str, amount: int):
 
 @app.post('/cancel/<user_id>')
 def cancel_payment(user_id: str):
+    """
+    Based on:
+        Pipelines and transactions. (n.d.). Redis Docs. https://redis.io/docs/latest/develop/clients/redis-py/transpipe/
+
+    :param user_id:
+    :return:
+    """
     data = request.get_json()
     if not data or "order_id" not in data:
         abort(400, "Missing order_id in request body")
@@ -209,10 +231,14 @@ def cancel_payment(user_id: str):
 
     try:
         with db.pipeline() as pipe:
+            # Repeat until successful.
             while True:
                 try:
+                    # Watch the key we are about to change.
                     pipe.watch(user_id, payment_key)
 
+                    # The pipeline executes commands directly (instead of buffering them) from immediately after the
+                    # `watch()` call until we begin the transaction.
                     amount_bytes = pipe.get(payment_key)
                     if amount_bytes is None:
                         pipe.unwatch()
@@ -229,15 +255,18 @@ def cancel_payment(user_id: str):
                     user_entry.credit += amount
                     encoded_user = msgpack.encode(user_entry)
 
+                    # Start the transaction, which will enable buffering again for the remaining commands.
                     pipe.multi()
                     pipe.set(user_id, encoded_user)
                     pipe.delete(payment_key)
                     pipe.execute()
 
                     log({user_id: encoded_user})
-                    break
 
+                    # The transaction succeeded, so break out of the loop.
+                    break
                 except redis.WatchError:
+                    # The transaction failed, so continue with the next attempt.
                     continue
 
     except redis.exceptions.RedisError:
