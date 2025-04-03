@@ -195,7 +195,7 @@ def checkout(order_id: str):
 
         # Step 2: Try payment
         send_post_request(
-            f"{PAYMENT_URL}/pay/{order_entry.user_id}/{order_id}/{order_entry.total_cost}",
+            f"{PAYMENT_URL}/pay/{order_entry.user_id}/{order_entry.total_cost}",
             json={"order_id": order_id}
         )
         payment_successful = True

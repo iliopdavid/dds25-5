@@ -96,7 +96,6 @@ def log(kv_pairs: dict):
             log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
-
 @app.post('/create_user')
 def create_user():
     key = str(uuid.uuid4())
@@ -146,8 +145,8 @@ def add_credit(user_id: str, amount: int):
     return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
 
 
-@app.post('/pay/<user_id>/<order_id>/<int:amount>')
-def pay(user_id: str, order_id: str, amount: int):
+@app.post('/pay/<user_id>/<int:amount>')
+def pay(user_id: str, amount: int):
     data = request.get_json()
     if not data or "order_id" not in data:
         abort(400, "Missing order_id in request body")
@@ -198,8 +197,8 @@ def pay(user_id: str, order_id: str, amount: int):
     return jsonify({"paid": True})
 
 
-@app.post('/cancel/<user_id>/<order_id>')
-def cancel_payment(user_id: str, order_id: str):
+@app.post('/cancel/<user_id>')
+def cancel_payment(user_id: str):
     data = request.get_json()
     if not data or "order_id" not in data:
         abort(400, "Missing order_id in request body")
