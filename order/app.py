@@ -184,6 +184,9 @@ def checkout(order_id: str):
     
     order_entry: OrderValue = get_order_from_db(order_id)
 
+    if order_entry.paid:
+        return Response(f"Order: {order_id} already paid", status=200)
+
     removed_items: dict[str, int] = {}
     payment_successful = False
 
@@ -194,10 +197,7 @@ def checkout(order_id: str):
             removed_items[item_id] = quantity
 
         # Step 2: Try payment
-        send_post_request(
-            f"{PAYMENT_URL}/pay/{order_entry.user_id}/{order_entry.total_cost}",
-            json={"order_id": order_id}
-        )
+        send_post_request(f"{PAYMENT_URL}/pay/{order_entry.user_id}/{order_entry.total_cost}")
         payment_successful = True
 
         # Step 3: Mark order as paid
@@ -218,8 +218,7 @@ def checkout(order_id: str):
 
         # Payment rollback
         if payment_successful:
-            send_post_request(f"{PAYMENT_URL}/cancel/{order_entry.user_id}",
-                              json={"order_id": order_id})
+            send_post_request(f"{PAYMENT_URL}/add_funds/{order_entry.user_id}/{order_entry.total_cost}")
             app.logger.info(f"[ROLLBACK] Payment for user {order_entry.user_id}")
 
         return Response(f"Checkout failed and compensated: {e}", status=400)

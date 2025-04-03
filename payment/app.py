@@ -155,19 +155,7 @@ def pay(user_id: str, amount: int):
     :param amount:
     :return:
     """
-    data = request.get_json()
-    if not data or "order_id" not in data:
-        abort(400, "Missing order_id in request body")
-
-    order_id = data["order_id"]
-
-    payment_key = f"payment:{user_id}:{order_id}"
-
     try:
-        # Avoid double payment
-        if db.exists(payment_key):
-            return jsonify({"paid": True})
-
         with db.pipeline() as pipe:
             # Repeat until successful.
             while True:
@@ -195,7 +183,6 @@ def pay(user_id: str, amount: int):
                     # Start the transaction, which will enable buffering again for the remaining commands.
                     pipe.multi()
                     pipe.set(user_id, encoded_user)
-                    pipe.set(payment_key, amount, nx=True)  # mark payment done
                     pipe.execute()
 
                     log({user_id: encoded_user})
@@ -210,69 +197,6 @@ def pay(user_id: str, amount: int):
         return abort(400, DB_ERROR_STR)
 
     return jsonify({"paid": True})
-
-
-@app.post('/cancel/<user_id>')
-def cancel_payment(user_id: str):
-    """
-    Based on:
-        Pipelines and transactions. (n.d.). Redis Docs. https://redis.io/docs/latest/develop/clients/redis-py/transpipe/
-
-    :param user_id:
-    :return:
-    """
-    data = request.get_json()
-    if not data or "order_id" not in data:
-        abort(400, "Missing order_id in request body")
-
-    order_id = data["order_id"]
-
-    payment_key = f"payment:{user_id}:{order_id}"
-
-    try:
-        with db.pipeline() as pipe:
-            # Repeat until successful.
-            while True:
-                try:
-                    # Watch the key we are about to change.
-                    pipe.watch(user_id, payment_key)
-
-                    # The pipeline executes commands directly (instead of buffering them) from immediately after the
-                    # `watch()` call until we begin the transaction.
-                    amount_bytes = pipe.get(payment_key)
-                    if amount_bytes is None:
-                        pipe.unwatch()
-                        return jsonify({"cancelled": False})
-
-                    amount = int(amount_bytes)
-                    user_bytes = pipe.get(user_id)
-
-                    if not user_bytes:
-                        pipe.unwatch()
-                        abort(400, f"User: {user_id} not found!")
-
-                    user_entry = msgpack.decode(user_bytes, type=UserValue)
-                    user_entry.credit += amount
-                    encoded_user = msgpack.encode(user_entry)
-
-                    # Start the transaction, which will enable buffering again for the remaining commands.
-                    pipe.multi()
-                    pipe.set(user_id, encoded_user)
-                    pipe.delete(payment_key)
-                    pipe.execute()
-
-                    log({user_id: encoded_user})
-
-                    # The transaction succeeded, so break out of the loop.
-                    break
-                except redis.WatchError:
-                    # The transaction failed, so continue with the next attempt.
-                    continue
-
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-
-    return jsonify({"cancelled": True})
 
 
 if __name__ == "__main__":
