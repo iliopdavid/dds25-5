@@ -21,42 +21,51 @@ services:
       - PAYMENT_URL=http://payment-service:5000
     volumes:
       - ./logging:/home/flask-app/logging
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info -c gunicorn_config.py app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - env/order_redis.env
     depends_on:
       - order-db
 
   order-db:
-    image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    build:
+      context: ./order
+      dockerfile: Dockerfile.redis
+    volumes:
+      - ./env/order_redis.env:/usr/local/bin/order_redis.env:ro
 
   stock-service:
     build: ./stock
     image: stock:latest
     volumes:
       - ./logging:/home/flask-app/logging
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info -c gunicorn_config.py app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - env/stock_redis.env
     depends_on:
       - stock-db
 
   stock-db:
-    image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    build:
+      context: ./stock
+      dockerfile: Dockerfile.redis
+    volumes:
+      - ./env/stock_redis.env:/usr/local/bin/stock_redis.env:ro
 
   payment-service:
     build: ./payment
     image: user:latest
     volumes:
       - ./logging:/home/flask-app/logging
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info -c gunicorn_config.py app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info app:app
     env_file:
       - env/payment_redis.env
     depends_on:
       - payment-db
 
   payment-db:
-    image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    build:
+      context: ./payment
+      dockerfile: Dockerfile.redis
+    volumes:
+      - ./env/payment_redis.env:/usr/local/bin/payment_redis.env:ro
