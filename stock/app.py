@@ -76,12 +76,13 @@ def log(kv_pairs: dict):
     with open(LOG_PATH, "a") as log_file:
         for k, v in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
-            
-@app.post('/item/create/<price>')
+
+
+@app.post('/item/create/<int:price>')
 def create_item(price: int):
     key = str(uuid.uuid4())
     app.logger.debug(f"Item: {key} created")
-    value = msgpack.encode(StockValue(stock=0, price=int(price)))
+    value = msgpack.encode(StockValue(stock=0, price=price))
     try:
         log({key: value})
         db.set(key, value)
@@ -90,11 +91,8 @@ def create_item(price: int):
     return jsonify({"item_id": key})
 
 
-@app.post('/batch_init/<n>/<starting_stock>/<item_price>')
+@app.post('/batch_init/<int:n>/<int:starting_stock>/<int:item_price>')
 def batch_init_users(n: int, starting_stock: int, item_price: int):
-    n = int(n)
-    starting_stock = int(starting_stock)
-    item_price = int(item_price)
     kv_pairs: dict[str, bytes] = {
         f"{i}": msgpack.encode(StockValue(stock=starting_stock, price=item_price))
         for i in range(n)
@@ -113,11 +111,11 @@ def find_item(item_id: str):
     return jsonify({"stock": item_entry.stock, "price": item_entry.price})
 
 
-@app.post('/add/<item_id>/<amount>')
+@app.post('/add/<item_id>/<int:amount>')
 def add_stock(item_id: str, amount: int):
     item_entry: StockValue = get_item_from_db(item_id)
     # update stock, serialize and update database
-    item_entry.stock += int(amount)
+    item_entry.stock += amount
     value = msgpack.encode(item_entry)
     try:
         log({item_id: value})
@@ -127,7 +125,7 @@ def add_stock(item_id: str, amount: int):
     return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
 
 
-@app.post('/subtract/<item_id>/<amount>')
+@app.post('/subtract/<item_id>/<int:amount>')
 def remove_stock(item_id: str, amount: int):
     """
     Based on:

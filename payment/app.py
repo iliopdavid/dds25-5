@@ -109,10 +109,8 @@ def create_user():
     return jsonify({"user_id": key})
 
 
-@app.post('/batch_init/<n>/<starting_money>')
+@app.post('/batch_init/<int:n>/<int:starting_money>')
 def batch_init_users(n: int, starting_money: int):
-    n = int(n)
-    starting_money = int(starting_money)
     kv_pairs: dict[str, bytes] = {f"{i}": msgpack.encode(UserValue(credit=starting_money))
                                   for i in range(n)}
     try:
@@ -134,11 +132,11 @@ def find_user(user_id: str):
     )
 
 
-@app.post('/add_funds/<user_id>/<amount>')
+@app.post('/add_funds/<user_id>/<int:amount>')
 def add_credit(user_id: str, amount: int):
     user_entry: UserValue = get_user_from_db(user_id)
     # update credit, serialize and update database
-    user_entry.credit += int(amount)
+    user_entry.credit += amount
     value = msgpack.encode(user_entry)
     try:
         log({user_id: value})
@@ -148,10 +146,8 @@ def add_credit(user_id: str, amount: int):
     return Response(f"User: {user_id} credit updated to: {user_entry.credit}", status=200)
 
 
-@app.post('/pay/<user_id>/<order_id>/<amount>')
+@app.post('/pay/<user_id>/<order_id>/<int:amount>')
 def pay(user_id: str, order_id: str, amount: int):
-    amount = int(amount)
-
     data = request.get_json()
     if not data or "order_id" not in data:
         abort(400, "Missing order_id in request body")

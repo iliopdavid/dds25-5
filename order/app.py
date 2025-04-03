@@ -14,9 +14,9 @@ from flask import Flask, jsonify, abort, Response
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
 
-GATEWAY_URL = os.environ['GATEWAY_URL']
-STOCK_URL = os.environ['STOCK_URL']
-PAYMENT_URL = os.environ['PAYMENT_URL']
+GATEWAY_URL = os.environ["GATEWAY_URL"]
+STOCK_URL = os.environ["STOCK_URL"]
+PAYMENT_URL = os.environ["PAYMENT_URL"]
 
 LOG_DIR = "logging"
 LOG_FILENAME = "order_log.txt"
@@ -24,7 +24,7 @@ LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
 
 def recover_from_logs():
-    with open(LOG_PATH, 'r') as file:
+    with open(LOG_PATH, "r") as file:
         for line in file:
             info = line.split(", ")
             db.set(info[0], base64.b64decode(info[1]))
@@ -35,7 +35,7 @@ def on_start():
         recover_from_logs()
     else:
         try:
-            with open(LOG_PATH, 'x'):
+            with open(LOG_PATH, "x"):
                 pass
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
@@ -81,9 +81,9 @@ def get_order_from_db(order_id: str) -> OrderValue | None:
 
 
 def log(kv_pairs: dict):
-    with open(LOG_PATH, 'a') as log_file:
+    with open(LOG_PATH, "a") as log_file:
         for (k, v) in kv_pairs.items():
-            log_file.write(k + ", " + base64.b64encode(v).decode('utf-8') + "\n")
+            log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
 @app.post('/create/<user_id>')
@@ -95,16 +95,11 @@ def create_order(user_id: str):
         db.set(key, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    return jsonify({'order_id': key})
+    return jsonify({"order_id": key})
 
 
-@app.post('/batch_init/<n>/<n_items>/<n_users>/<item_price>')
+@app.post('/batch_init/<int:n>/<int:n_items>/<int:n_users>/<int:item_price>')
 def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
-    n = int(n)
-    n_items = int(n_items)
-    n_users = int(n_users)
-    item_price = int(item_price)
-
     def generate_entry() -> OrderValue:
         user_id = random.randint(0, n_users - 1)
         item1_id = random.randint(0, n_items - 1)
@@ -160,7 +155,7 @@ def send_get_request(url: str):
         return response
 
 
-@app.post('/addItem/<order_id>/<item_id>/<quantity>')
+@app.post('/addItem/<order_id>/<item_id>/<int:quantity>')
 def add_item(order_id: str, item_id: str, quantity: int):
     order_entry: OrderValue = get_order_from_db(order_id)
     item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
@@ -169,10 +164,10 @@ def add_item(order_id: str, item_id: str, quantity: int):
         abort(400, f"Item: {item_id} does not exist!")
     item_json: dict = item_reply.json()
     if item_id in order_entry.items:
-        order_entry.items[item_id] += int(quantity)
+        order_entry.items[item_id] += quantity
     else:
-        order_entry.items[item_id] = int(quantity)
-    order_entry.total_cost += int(quantity) * item_json["price"]
+        order_entry.items[item_id] = quantity
+    order_entry.total_cost += quantity * item_json["price"]
     value = msgpack.encode(order_entry)
     try:
         log({order_id: value})
@@ -230,9 +225,9 @@ def checkout(order_id: str):
         return Response(f"Checkout failed and compensated: {e}", status=400)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
-    gunicorn_logger = logging.getLogger('gunicorn.error')
+    gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
