@@ -4,7 +4,6 @@ import os
 import atexit
 import threading
 import uuid
-import pika
 import redis
 
 from msgspec import msgpack, Struct
@@ -47,7 +46,7 @@ def on_start():
 
 
 def start_consumer():
-    consumer = StockConsumer()
+    consumer = StockConsumer(db)
     app.logger.debug("Consumer started!")
     consumer.consume_messages()
 

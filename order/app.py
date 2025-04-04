@@ -26,8 +26,6 @@ LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
 app = Flask("order-service")
 app.logger.setLevel(logging.INFO)
-consumer = OrderConsumer()
-producer = OrderProducer()
 
 db: redis.Redis = redis.Redis(
     host=os.environ["REDIS_HOST"],
@@ -35,6 +33,9 @@ db: redis.Redis = redis.Redis(
     password=os.environ["REDIS_PASSWORD"],
     db=int(os.environ["REDIS_DB"]),
 )
+
+consumer = OrderConsumer(db)
+producer = OrderProducer()
 
 
 def recover_from_logs():

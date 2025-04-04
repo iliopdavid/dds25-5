@@ -1,28 +1,44 @@
 import json
-from rabbitmq_connection import RabbitMQConnection
 import pika
 
 
 class OrderProducer:
     def __init__(self, max_retries=5, retry_delay=5):
-        self.connection = pika.BlockingConnection(pika.ConnectionParameters("rabbitmq"))
-        self.channel = self.connection.channel()
-
-        # self.rabbitmq = RabbitMQConnection(
-        #     max_retries=max_retries, retry_delay=retry_delay
-        # )
+        self.connection = None
+        self.channel = None
+        self._connect()
 
         self.channel.exchange_declare(exchange="order.exchange", exchange_type="topic")
+
+    def _connect(self):
+        from app import app
+
+        try:
+            self.connection = pika.BlockingConnection(
+                pika.ConnectionParameters("rabbitmq")
+            )
+            self.channel = self.connection.channel()
+            self.channel.exchange_declare(
+                exchange="order.exchange", exchange_type="topic"
+            )
+        except Exception as e:
+            app.logger.error(f"Failed to connect to RabbitMQ: {e}")
+            self.connection = None
+            self.channel = None
+
+    def _ensure_connection(self):
+        from app import app
+
+        if not self.connection or self.connection.is_closed:
+            app.logger.warning("RabbitMQ connection lost. Reconnecting...")
+            self._connect()
 
     def send_event(self, routing_key, message):
         from app import app
 
         if not self.connection or self.connection.is_closed:
             app.logger.error("RabbitMQ channel is closed. Reconnecting...")
-            self.connection = pika.BlockingConnection(
-                pika.ConnectionParameters("rabbitmq")
-            )
-            self.channel = self.connection.channel()
+            self._connect()
 
         try:
             # Create a new channel for this operation
@@ -56,7 +72,6 @@ class OrderProducer:
 
     # Send an event notifying other services that checkout has failed
     def send_checkout_failed(self, order_id, reason):
-        """Notify that an order has failed."""
         message = {"order_id": order_id, "status": "FAILED", "reason": reason}
         self.send_event("order.failed", message)
 

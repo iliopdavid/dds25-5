@@ -50,7 +50,7 @@ def on_start():
 
 
 def start_consumer():
-    consumer = PaymentConsumer()
+    consumer = PaymentConsumer(db)
     app.logger.debug("Consumer started!")
     consumer.consume_messages()
 
