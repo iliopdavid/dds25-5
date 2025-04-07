@@ -7,9 +7,12 @@ import uuid
 import grpc
 import redis
 import requests
-from flask import Flask, abort
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
 from msgspec import msgpack, Struct
 
+from protos import order_pb2_grpc
 from protos import order_pb2, stock_pb2_grpc, payment_pb2_grpc, stock_pb2
 from protos.order_pb2_grpc import OrderServiceServicer
 from protos.stock_pb2_grpc import StockService
@@ -19,7 +22,12 @@ REQ_ERROR_STR = "Requests error"
 
 #GATEWAY_URL = os.environ['GATEWAY_URL']
 
-app = Flask("order-service")
+app = FastAPI()
+logger = logging.getLogger("uvicorn")
+gunicorn_logger = logging.getLogger("gunicorn.error")
+app.logger = gunicorn_logger
+# Load environment variables from .env file
+load_dotenv(dotenv_path="../env/order_redis.env")
 
 db: redis.Redis = redis.Redis(host=os.environ['REDIS_HOST'],
                               port=int(os.environ['REDIS_PORT']),
@@ -43,7 +51,8 @@ def send_post_request(url: str):
     try:
         response = requests.post(url)
     except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
+        app.logger.error(REQ_ERROR_STR)
+        raise HTTPException(status_code=400, detail=REQ_ERROR_STR)
     else:
         return response
 
@@ -52,7 +61,8 @@ def send_get_request(url: str):
     try:
         response = requests.get(url)
     except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
+        app.logger.error(REQ_ERROR_STR)
+        raise HTTPException(status_code=400, detail=REQ_ERROR_STR)
     else:
         return response
 
@@ -61,12 +71,14 @@ def get_order_from_db(order_id: str) -> OrderValue | None:
         # get serialized data
         entry: bytes = db.get(order_id)
     except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
+        app.logger.error(DB_ERROR_STR)
+        raise HTTPException(status_code=400, detail=DB_ERROR_STR)
     # deserialize data if it exists else return null
     entry: OrderValue | None = msgpack.decode(entry, type=OrderValue) if entry else None
     if entry is None:
         # if order does not exist in the database; abort
-        abort(400, f"Order: {order_id} not found!")
+        app.logger.error(f"Order: {order_id} not found!")
+        raise HTTPException(status_code=400, detail=f"Order: {order_id} not found!")
     return entry
 
 def rollback_stock(removed_items: dict[str, int]):
@@ -74,6 +86,32 @@ def rollback_stock(removed_items: dict[str, int]):
     for item_id, quantity in removed_items.items():
         stockstub.add_stock(item_id, quantity)
         #send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
+
+@app.post('/create/{user_id}')
+async def handle_http_request_create(user_id: str):
+    try:
+        grpc_request = order_pb2.CreateOrderRequest(user_id=str(user_id))  # Convert HTTP data to gRPC format
+
+        async with grpc.aio.insecure_channel('localhost:50050', options=(('grpc.enable_http_proxy', 0),)) as channel:
+            stub = order_pb2_grpc.OrderServiceStub(channel=channel)
+            response = await stub.create_order(grpc_request)
+        return {"order_id": response.order_id}  # Convert gRPC response to JSON
+    except Exception as e:
+        print(f"Error: {e}")
+        return {"error": str(e)}
+
+@app.post('/checkout/<order_id>')
+async def handle_http_request_checkout(order_id: str):
+    try:
+        grpc_request = order_pb2.OrderIdRequest(order_id=str(order_id))  # Convert HTTP data to gRPC format
+
+        async with grpc.aio.insecure_channel('localhost:50050', options=(('grpc.enable_http_proxy', 0),)) as channel:
+            stub = order_pb2_grpc.OrderServiceStub(channel=channel)
+            response = await stub.checkout(grpc_request)
+        return {"message": response.message, "statuscode": response.statuscode}  # Convert gRPC response to JSON
+    except Exception as e:
+        print(f"Error: {e}")
+        return {"error": str(e)}
 
 class OrderService(OrderServiceServicer):
     def batch_init_users(self, request, context):
@@ -97,7 +135,8 @@ class OrderService(OrderServiceServicer):
         try:
             db.mset(kv_pairs)
         except redis.exceptions.RedisError:
-            return abort(400, DB_ERROR_STR)
+            app.logger.error(DB_ERROR_STR)
+            raise HTTPException(status_code=400, detail=DB_ERROR_STR)
         return order_pb2.BatchInitOrderResponse(message="Batch init for orders successful")
 
     def create_order(self, request, context):
@@ -106,7 +145,8 @@ class OrderService(OrderServiceServicer):
         try:
             db.set(key, value)
         except redis.exceptions.RedisError:
-            return abort(400, DB_ERROR_STR)
+            app.logger.error(DB_ERROR_STR)
+            raise HTTPException(status_code=400, detail=DB_ERROR_STR)
         return order_pb2.CreateOrderResponse(order_id=key)
 
     def find_order(self, request, context):
@@ -123,7 +163,8 @@ class OrderService(OrderServiceServicer):
             #item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{request.item_id}")
             if item_reply.status_code != 200:
                 # Request failed because item does not exist
-                abort(400, f"Item: {request.item_id} does not exist!")
+                app.logger.error(f"Item: {request.item_id} does not exist!")
+                raise HTTPException(status_code=400, detail=f"Item: {request.item_id} does not exist!")
             item_json: dict = item_reply.json()
             if request.item_id in order_entry.items:
                 order_entry.items[request.item_id] += int(request.quantity)
@@ -133,7 +174,8 @@ class OrderService(OrderServiceServicer):
             try:
                 db.set(request.order_id, msgpack.encode(order_entry))
             except redis.exceptions.RedisError:
-                return abort(400, DB_ERROR_STR)
+                app.logger.error(DB_ERROR_STR)
+                raise HTTPException(status_code=400, detail=DB_ERROR_STR)
             return order_pb2.StatuscodeResponse(message=f"Item: {request.item_id} added to: {request.order_id} price updated to: {order_entry.total_cost}",
                             statuscode=200)
 
@@ -153,24 +195,27 @@ class OrderService(OrderServiceServicer):
                     if stock_reply.status_code != 200:
                         # If one item does not have enough stock we need to rollback
                         rollback_stock(removed_items)
-                        abort(400, f'Out of stock on item_id: {item_id}')
+                        app.logger.error(f'Out of stock on item_id: {item_id}')
+                        raise HTTPException(status_code=400, detail=f'Out of stock on item_id: {item_id}')
                     removed_items[item_id] = quantity
                 user_reply = paymentstub.remove_credit(order_entry.user_id, order_entry.total_cost)
                 #user_reply = send_post_request(f"{GATEWAY_URL}/payment/pay/{order_entry.user_id}/{order_entry.total_cost}")
                 if user_reply.status_code != 200:
                     # If the user does not have enough credit we need to rollback all the item stock subtractions
                     rollback_stock(removed_items)
-                    abort(400, "User out of credit")
+                    app.logger.error("User out of credit")
+                    raise HTTPException(status_code=400, detail="User out of credit")
                 order_entry.paid = True
                 try:
                     db.set(request.order_id, msgpack.encode(order_entry))
                 except redis.exceptions.RedisError:
-                    return abort(400, DB_ERROR_STR)
+                    app.logger.error(DB_ERROR_STR)
+                    raise HTTPException(status_code=400, detail=DB_ERROR_STR)
                 app.logger.debug("Checkout successful")
                 return order_pb2.StatuscodeResponse(message="Checkout successful", statuscode=200)
 
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
 else:
     gunicorn_logger = logging.getLogger('gunicorn.error')
     app.logger.handlers = gunicorn_logger.handlers

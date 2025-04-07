@@ -21,6 +21,7 @@ services:
     command: ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
     ports:
       - "5000:5000"
+      - "50050:50050"
     env_file:
       - env/order_redis.env
     depends_on:

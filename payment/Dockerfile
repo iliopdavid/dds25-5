@@ -6,6 +6,7 @@ COPY ./requirements.txt .
 
 RUN pip install -r requirements.txt
 RUN pip install --upgrade google-api-python-client
+RUN pip install 'flask[async]'
 
 COPY . .
 
@@ -13,4 +14,5 @@ RUN apt-get update && apt-get install -y supervisor
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 CMD ["supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
 
-EXPOSE 50051 5000
+EXPOSE 50051
+EXPOSE 5000
