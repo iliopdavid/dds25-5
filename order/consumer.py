@@ -1,6 +1,8 @@
+import redis
 from producer import OrderProducer
 import json
 import pika
+from msgspec import msgpack
 
 
 class OrderConsumer:
@@ -64,7 +66,6 @@ class OrderConsumer:
             app.logger.warning("RabbitMQ connection closed. Reconnecting...")
             self._connect()
 
-    # Start consuming messages
     def consume_messages(self):
         from app import app
 
@@ -80,7 +81,6 @@ class OrderConsumer:
             app.logger.info("Stopping consumer...")
             self.cleanup()
 
-    # Handle incoming messages
     def handle_message(self, ch, method, properties, body):
         from app import app
 
@@ -120,34 +120,38 @@ class OrderConsumer:
             app.logger.error(f"Failed to decode message: {e}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
-    # handle the event notifying that the payment processing has been completed
     def handle_payment_processed(self, order_id, value):
         payment_status = value["status"]
         self.update_order_status(order_id, "payment_status", payment_status)
         self.evaluate_order_state(order_id)
 
-    # handle the event notifying that the stock processing has been completed
     def handle_stock_updated(self, order_id, value):
         stock_status = value["status"]
         self.update_order_status(order_id, "stock_status", stock_status)
         self.evaluate_order_state(order_id)
 
     def evaluate_order_state(self, order_id):
-        from app import app
+        from app import app, OrderValue
 
-        order_bytes = self.redis_client.hgetall(f"order:{order_id}")
-        order = {k.decode(): v.decode() for k, v in order_bytes.items()}
+        order: OrderValue = self.get_order_from_db(order_id)
 
-        stock_status = order.get("stock_status")
-        payment_status = order.get("payment_status")
+        stock_status = order.stock_status
+        payment_status = order.payment_status
 
-        app.logger.debug(f"Evaluating order state: {order}")
+        app.logger.debug(f"Evaluating order state: stock={order}")
+
+        app.logger.debug(
+            f"Evaluating order state: stock={stock_status} and payment={payment_status}"
+        )
+        app.logger.info(
+            f"output: {stock_status == 'SUCCESS' and payment_status == 'FAILED'} or {stock_status == 'FAILED' and payment_status == 'SUCCESS'}"
+        )
 
         if stock_status == "SUCCESS" and payment_status == "SUCCESS":
             self.complete_order(order_id)
-        elif stock_status == "SUCCESS" and payment_status == "FAILED":
+        elif stock_status == "SUCCESS" and payment_status == "FAILURE":
             self.initiate_rollback(order_id, "order.stock.rollback")
-        elif stock_status == "FAILED" and payment_status == "SUCCESS":
+        elif stock_status == "FAILURE" and payment_status == "SUCCESS":
             self.initiate_rollback(order_id, "order.payment.rollback")
 
     def handle_stock_rollbacked(self, order_id, value):
@@ -157,116 +161,121 @@ class OrderConsumer:
         self.update_order_status(order_id, "rollback_status", "COMPLETED")
 
     def update_order_status(self, order_id, field, status):
-        self.redis_client.hset(f"order:{order_id}", field, status)
+        from app import OrderValue
+
+        try:
+            # Retry the transaction using watch and multi for atomicity
+            while True:
+                with self.redis_client.pipeline() as pipe:
+                    try:
+                        # Watch the order key
+                        pipe.watch(order_id)
+
+                        # Fetch the current order entry
+                        user_bytes = pipe.get(order_id)
+                        if not user_bytes:
+                            pipe.unwatch()
+                            return
+
+                        order: OrderValue = msgpack.decode(user_bytes, type=OrderValue)
+                        setattr(order, field, status)
+
+                        # Start the transaction
+                        pipe.multi()
+                        pipe.set(order_id, msgpack.encode(order))
+                        pipe.execute()
+
+                        break  # Break out of loop if transaction is successful
+                    except redis.WatchError:
+                        # Transaction failed, retry
+                        continue
+        except redis.exceptions.RedisError:
+            from app import app
+
+            app.logger.exception(f"Error updating order {order_id} status")
 
     def initiate_rollback(self, order_id, event):
-        from app import app
+        from app import app, OrderValue
 
-        order_entry = self.get_order_from_db(order_id)
+        try:
+            while True:
+                with self.redis_client.pipeline() as pipe:
+                    try:
+                        pipe.watch(order_id)
+                        entry = pipe.get(order_id)
+                        if not entry:
+                            pipe.unwatch()
+                            app.logger.warning(
+                                f"No order found in Redis to rollback: {order_id}"
+                            )
+                            return
 
-        app.logger.debug(f"rollback initiated!!!!! event: {event}")
+                        order: OrderValue = msgpack.decode(entry, type=OrderValue)
 
-        if event == "order.stock.rollback":
-            self.producer.send_event(
-                "order.stock.rollback",
-                {"order_id": order_id, "items": order_entry["items"]},
-            )
-        elif event == "order.payment.rollback":
-            self.producer.send_event(
-                "order.payment.rollback",
-                {
-                    "user_id": order_entry["user_id"],
-                    "total_amount": order_entry["total_cost"],
-                },
-            )
-        self.update_order_status(order_id, "rollback_status", "INITIATED")
+                        app.logger.debug(
+                            f"rollback initiated!!!!! event: {event}, orderid {order_id}, order entry {order}"
+                        )
+
+                        if event == "order.stock.rollback":
+                            self.producer.send_event(
+                                "order.stock.rollback",
+                                {"order_id": order_id, "items": order.items},
+                            )
+                        elif event == "order.payment.rollback":
+                            self.producer.send_event(
+                                "order.payment.rollback",
+                                {
+                                    "user_id": order.user_id,
+                                    "total_amount": order.total_cost,
+                                },
+                            )
+
+                        order.rollback_status = "INITIATED"
+                        pipe.multi()
+                        pipe.set(order_id, msgpack.encode(order))
+                        pipe.execute()
+                        break  # Exit the loop if successful
+                    except redis.WatchError:
+                        continue
+        except redis.exceptions.RedisError:
+            app.logger.exception(f"Error initiating rollback for order {order_id}")
 
     def complete_order(self, order_id):
-        from app import app
+        from app import app, OrderValue
 
-        self.update_order_status(order_id, "stock_status", "COMPLETED")
-        self.update_order_status(order_id, "payment_status", "COMPLETED")
-        app.logger.info(f"Order {order_id} successfully completed!")
+        try:
+            while True:
+                with self.redis_client.pipeline() as pipe:
+                    try:
+                        pipe.watch(order_id)
+                        entry = pipe.get(order_id)
+                        if not entry:
+                            pipe.unwatch()
+                            return
+
+                        order: OrderValue = msgpack.decode(entry, type=OrderValue)
+                        order.stock_status = "COMPLETED"
+                        order.payment_status = "COMPLETED"
+
+                        pipe.multi()
+                        pipe.set(order_id, msgpack.encode(order))
+                        pipe.execute()
+                        break
+                    except redis.WatchError:
+                        continue
+        except redis.exceptions.RedisError:
+            app.logger.exception(f"Error completing order {order_id}")
 
     def get_order_from_db(self, order_id):
-        order = self.redis_client.hgetall(f"order:{order_id}")
-        return {
-            "user_id": order.get("user_id"),
-            "total_cost": order.get("total_cost"),
-            "items": order.get("items"),
-        }
+        from app import OrderValue
 
-    def order_successfully_processed(self, order_id):
-        from app import app
+        # get serialized data
+        entry: bytes = self.redis_client.get(order_id)
+        entry: OrderValue | None = (
+            msgpack.decode(entry, type=OrderValue) if entry else None
+        )
+        return entry
 
-        try:
-            order_bytes = self.redis_client.hgetall(f"order:{order_id}")
-            order = {
-                k.decode("utf-8"): v.decode("utf-8") for k, v in order_bytes.items()
-            }
-            stock_status = order.get("stock_status")
-            payment_status = order.get("payment_status")
-            result = stock_status == "SUCCESS" and payment_status == "SUCCESS"
-
-            app.logger.debug(
-                f"success status being checked {order} with result {result}"
-            )
-            return result
-
-        except Exception as e:
-            app.logger.exception(
-                f"Error checking success status for order {order_id}: {e}"
-            )
-            return False  # Fail safe if there's an error
-
-    def payment_failed_but_stock_succeeded(self, order_id):
-        from app import app
-
-        try:
-            order_bytes = self.redis_client.hgetall(f"order:{order_id}")
-            order = {
-                k.decode("utf-8"): v.decode("utf-8") for k, v in order_bytes.items()
-            }
-            stock_status = order.get("stock_status")
-            payment_status = order.get("payment_status")
-            result = payment_status == "FAILED" and stock_status == "SUCCESS"
-
-            app.logger.debug(
-                f"_payment_failed_but_stock_succeeded status being checked {order} with result {result}"
-            )
-            return result
-
-        except Exception as e:
-            app.logger.exception(
-                f"Error checking payment_failed_stock_succeeded for order {order_id}: {e}"
-            )
-            return False
-
-    def stock_failed_but_payment_succeeded(self, order_id):
-        from app import app
-
-        try:
-            order_bytes = self.redis_client.hgetall(f"order:{order_id}")
-            order = {
-                k.decode("utf-8"): v.decode("utf-8") for k, v in order_bytes.items()
-            }
-
-            stock_status = order.get("stock_status")
-            payment_status = order.get("payment_status")
-            result = stock_status == "FAILED" and payment_status == "SUCCESS"
-
-            app.logger.debug(
-                f"_stock_failed_but_payment_succeeded status being checked {order} with result {result}"
-            )
-            return result
-
-        except Exception as e:
-            app.logger.exception(
-                f"Error checking stock_failed_payment_succeeded for order {order_id}: {e}"
-            )
-            return False
-
-    # prevents same event to be consumed multiple times (because of retry etc)
     def set_idempotency_key(self, order_id, topic):
         key = f"idempotency:{order_id}:{topic}"
         return self.redis_client.setnx(key, "processed")

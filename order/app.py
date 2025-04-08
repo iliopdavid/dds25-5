@@ -96,6 +96,9 @@ class OrderValue(Struct):
     items: dict[str, int]
     user_id: str
     total_cost: int
+    stock_status: str
+    payment_status: str
+    rollback_status: str
 
 
 def get_order_from_db(order_id: str) -> OrderValue | None:
@@ -122,7 +125,15 @@ def log(kv_pairs: dict):
 def create_order(user_id: str):
     key = str(uuid.uuid4())
     value = msgpack.encode(
-        OrderValue(paid=False, items={}, user_id=user_id, total_cost=0)
+        OrderValue(
+            paid=False,
+            items={},
+            user_id=user_id,
+            total_cost=0,
+            payment_status="PENDING",
+            stock_status="PENDING",
+            rollback_status="NONE",
+        )
     )
     try:
         log({key: value})

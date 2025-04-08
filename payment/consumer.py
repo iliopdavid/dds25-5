@@ -80,6 +80,20 @@ class PaymentConsumer:
         except Exception as e:
             app.logger.error(f"Error processing message: {e}")
 
+    def send_payment_processed_event(self, order_id, user_id, status, total_amount):
+        event_data = {
+            "order_id": order_id,
+            "user_id": user_id,
+            "status": status,
+            "total_amount": total_amount,
+        }
+        self.producer.send_message("payment.processed", event_data)
+
+    def handle_payment_rollback(self, stock_failure_data):
+        user_id = stock_failure_data.get("user_id")
+        amount = stock_failure_data.get("total_amount")
+        self.rollback_credit(user_id, amount)
+
     def process_payment(self, payment_data):
         from app import get_user_from_db, app
 
@@ -104,8 +118,14 @@ class PaymentConsumer:
             # Deduct credit
             user_entry.credit -= int(amount)
 
-            # Update Redis with new credit value
-            self.redis_client.set(user_id, msgpack.encode(user_entry))
+            # Use Redis pipeline for multiple commands
+            pipeline = self.redis_client.pipeline()
+
+            # Update Redis with new credit value using the pipeline
+            pipeline.set(user_id, msgpack.encode(user_entry))
+
+            # Execute the pipeline
+            pipeline.execute()
 
             app.logger.debug(
                 f"Credit for user {user_id} reduced by {amount}. New credit: {user_entry.credit}"
@@ -120,20 +140,6 @@ class PaymentConsumer:
             self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
             return {"status": "failure", "message": str(e)}
 
-    def send_payment_processed_event(self, order_id, user_id, status, total_amount):
-        event_data = {
-            "order_id": order_id,
-            "user_id": user_id,
-            "status": status,
-            "total_amount": total_amount,
-        }
-        self.producer.send_message("payment.processed", event_data)
-
-    def handle_payment_rollback(self, stock_failure_data):
-        user_id = stock_failure_data.get("user_id")
-        amount = stock_failure_data.get("total_amount")
-        self.rollback_credit(user_id, amount)
-
     def rollback_credit(self, user_id, amount):
         from app import get_user_from_db, app
 
@@ -141,8 +147,14 @@ class PaymentConsumer:
             user_entry = get_user_from_db(user_id)
             user_entry.credit += int(amount)
 
-            # Update Redis with the rolled-back credit
-            self.redis_client.set(user_id, msgpack.encode(user_entry))
+            # Use Redis pipeline for multiple commands
+            pipeline = self.redis_client.pipeline()
+
+            # Update Redis with the rolled-back credit value using the pipeline
+            pipeline.set(user_id, msgpack.encode(user_entry))
+
+            # Execute the pipeline
+            pipeline.execute()
 
             app.logger.debug(
                 f"Credit for user {user_id} rolled back by {amount}. New credit: {user_entry.credit}"

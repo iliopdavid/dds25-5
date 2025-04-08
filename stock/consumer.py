@@ -1,5 +1,6 @@
 import json
 import pika
+import redis
 from msgspec import msgpack
 from producer import StockProducer
 
@@ -69,7 +70,7 @@ class StockConsumer:
         from app import app
 
         app.logger.debug(
-            f"Payment consumer received messaged with routing key {method.routing_key} and content {body}"
+            f"Stock consumer received message with routing key {method.routing_key} and content {body}"
         )
 
         try:
@@ -91,32 +92,60 @@ class StockConsumer:
         items = stock_data.get("items")
 
         try:
-            for item_id, quantity in items.items():
-                # Get item details from Redis database
-                item_entry = get_item_from_db(item_id)
-                item_entry.stock -= int(quantity)
-                value = msgpack.encode(item_entry)
+            while True:
+                pipeline = self.redis_client.pipeline()
 
-                if item_entry.stock < 0:
-                    app.logger.debug(f"Item {item_id} stock is reduced to below 0.")
-                    self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
+                try:
+                    # Watch the item stock entries
+                    for item_id in items:
+                        pipeline.watch(item_id)
+
+                    # Check stock levels for each item
+                    for item_id, quantity in items.items():
+                        # Get item details from Redis database
+                        item_entry = get_item_from_db(item_id)
+                        if item_entry.stock < int(quantity):
+                            pipeline.unwatch()
+                            app.logger.debug(
+                                f"Item {item_id} stock is reduced to below 0."
+                            )
+                            self.send_stock_processed_event(
+                                order_id, user_id, "FAILURE", items
+                            )
+                            return {
+                                "status": "failure",
+                                "message": f"Not enough stock for item {item_id}.",
+                            }
+
+                    # Start the transaction
+                    pipeline.multi()
+
+                    # Update stock for each item
+                    for item_id, quantity in items.items():
+                        item_entry = get_item_from_db(item_id)
+                        item_entry.stock -= int(quantity)
+                        value = msgpack.encode(item_entry)
+                        pipeline.set(
+                            item_id, value
+                        )  # Queue the command to update stock in Redis
+                        app.logger.debug(
+                            f"Item {item_id} stock reduced by {quantity}. New stock: {item_entry.stock}"
+                        )
+
+                    # Execute the pipeline
+                    pipeline.execute()
+
+                    # If everything succeeds, send a success event
+                    self.send_stock_processed_event(order_id, user_id, "SUCCESS", items)
                     return {
-                        "status": "failure",
-                        "message": "Not enough stock available.",
+                        "status": "success",
+                        "message": "Stock updated successfully",
                     }
 
-                # Update stock in Redis
-                self.redis_client.set(item_id, value)
-                app.logger.debug(
-                    f"Item {item_id} stock reduced by {quantity}. New stock: {item_entry.stock}"
-                )
+                except redis.WatchError:
+                    # Retry if the watched key was modified by another transaction
+                    app.logger.info(f"Retrying due to WatchError for order {order_id}")
 
-                # If everything succeeds, send a success event
-                self.send_stock_processed_event(order_id, user_id, "SUCCESS", items)
-                return {
-                    "status": "success",
-                    "message": "Stock updated successfully",
-                }
         except Exception as e:
             app.logger.error(f"Error processing stock for order {order_id}: {e}")
             self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
@@ -147,23 +176,39 @@ class StockConsumer:
         from app import app, get_item_from_db
 
         try:
-            for item in items:
-                item_id = item.get("item_id")
-                quantity = item.get("quantity")
+            while True:
+                pipeline = self.redis_client.pipeline()
 
-                # Get the item from Redis
-                item_entry = get_item_from_db(item_id)
+                try:
+                    # Watch the item stock entries
+                    for item in items:
+                        pipeline.watch(item["item_id"])
 
-                # Rollback stock by adding the quantity back
-                item_entry.stock += int(quantity)
-                value = msgpack.encode(item_entry)
+                    # Rollback stock for each item
+                    for item in items:
+                        item_id = item["item_id"]
+                        quantity = item["quantity"]
 
-                # Update Redis with rolled back stock
-                self.redis_client.set(item_id, value)
+                        # Get the item from Redis
+                        item_entry = get_item_from_db(item_id)
+                        item_entry.stock += int(quantity)
 
-                app.logger.debug(
-                    f"Rolled back stock for item {item_id}. Quantity: {quantity}. New stock: {item_entry.stock}"
-                )
+                        # Encode the item data and add the update to the pipeline
+                        value = msgpack.encode(item_entry)
+                        pipeline.set(item_id, value)  # Queue the rollback command
+
+                        app.logger.debug(
+                            f"Rolled back stock for item {item_id}. Quantity: {quantity}. New stock: {item_entry.stock}"
+                        )
+
+                    # Execute the pipeline
+                    pipeline.execute()
+                    return
+
+                except redis.WatchError:
+                    # Retry if the watched key was modified by another transaction
+                    app.logger.info(f"Retrying due to WatchError for rollback")
+
         except Exception as e:
             app.logger.error(f"Error rolling back stock for items: {str(e)}")
 

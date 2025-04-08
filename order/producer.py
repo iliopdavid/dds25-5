@@ -40,11 +40,46 @@ class OrderProducer:
 
         if not self.connection or self.connection.is_closed:
             app.logger.error("RabbitMQ channel is closed. Reconnecting...")
-            self._connect()
+            # Note: _connect might fail and leave self.channel as None, which could cause errors below.
+            # Consider adding a check after _connect() or more robust error handling.
+            try:
+                self._connect()
+                if not self.channel:
+                    # If connection failed, raise an error immediately or handle appropriately
+                    raise ConnectionError(
+                        "Failed to reconnect to RabbitMQ in send_event"
+                    )
+            except Exception as connect_err:
+                # Log connection error and re-raise or handle
+                app.logger.error(
+                    f"Error during reconnect attempt in send_event: {connect_err}",
+                    exc_info=True,
+                )
+                raise ConnectionError(
+                    f"Failed to reconnect: {connect_err}"
+                ) from connect_err
 
         try:
-            # Create a new channel for this operation
-            message_body = json.dumps(message)
+            # Ensure channel is usable after potential reconnect attempt
+            if not self.channel or self.channel.is_closed:
+                # This condition might occur if _connect fails silently or channel closes again quickly
+                raise pika.exceptions.ChannelWrongStateError(
+                    "Channel is not available or closed after connection check."
+                )
+
+            # Attempt to serialize the message
+            try:
+                message_body = json.dumps(message)
+            except TypeError as json_err:
+                # Catch specific JSON serialization errors
+                app.logger.error(
+                    f"Failed to serialize message to JSON for routing key '{routing_key}'. Check data types. Error: {json_err}",
+                    exc_info=True,
+                )
+                # Re-raise or handle as appropriate - maybe don't raise to avoid crashing worker? Depends on desired behavior.
+                raise  # Re-raise by default
+
+            # Attempt to publish
             self.channel.basic_publish(
                 exchange="order.exchange",
                 routing_key=routing_key,
@@ -53,9 +88,23 @@ class OrderProducer:
             app.logger.debug(
                 f"Message sent to exchange 'order.exchange' with key '{routing_key}': {message_body}"
             )
+
+        # --- MODIFIED EXCEPTION BLOCK ---
         except Exception as e:
-            app.logger.error(f"Error sending event to RabbitMQ: {e}")
+            # Use logger.exception() to automatically include traceback
+            error_context = (
+                f"Error sending event with routing key '{routing_key}' to RabbitMQ."
+            )
+            # Log the context message along with exception info + traceback
+            app.logger.exception(error_context)
+
+            # Optional: Log specific details if needed (be careful with sensitive data in 'message')
+            # app.logger.debug(f"Exception type: {type(e).__name__}")
+            # app.logger.debug(f"Message content during error (partial): {str(message)[:200]}") # Log truncated message if safe
+
+            # Re-raise the exception so the caller knows something went wrong
             raise
+        # --- END MODIFICATION ---
 
     # Notify that the order checkout has been placed.
     def send_checkout_called(self, order_id, user_id, total_amount, items):
