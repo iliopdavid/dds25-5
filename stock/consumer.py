@@ -176,38 +176,20 @@ class StockConsumer:
         from app import app, get_item_from_db
 
         try:
-            while True:
-                pipeline = self.redis_client.pipeline()
+            for item_id, quantity in items.items():
+                # Fetch item from DB (likely Redis or your data store)
+                item_entry = get_item_from_db(item_id)
 
-                try:
-                    # Watch the item stock entries
-                    for item in items:
-                        pipeline.watch(item["item_id"])
+                # Increment stock
+                item_entry.stock += int(quantity)
 
-                    # Rollback stock for each item
-                    for item in items:
-                        item_id = item["item_id"]
-                        quantity = item["quantity"]
+                # Encode and store it back
+                value = msgpack.encode(item_entry)
+                self.redis_client.set(item_id, value)
 
-                        # Get the item from Redis
-                        item_entry = get_item_from_db(item_id)
-                        item_entry.stock += int(quantity)
-
-                        # Encode the item data and add the update to the pipeline
-                        value = msgpack.encode(item_entry)
-                        pipeline.set(item_id, value)  # Queue the rollback command
-
-                        app.logger.debug(
-                            f"Rolled back stock for item {item_id}. Quantity: {quantity}. New stock: {item_entry.stock}"
-                        )
-
-                    # Execute the pipeline
-                    pipeline.execute()
-                    return
-
-                except redis.WatchError:
-                    # Retry if the watched key was modified by another transaction
-                    app.logger.info(f"Retrying due to WatchError for rollback")
+                app.logger.debug(
+                    f"Rolled back stock for item {item_id}. Quantity: {quantity}. New stock: {item_entry.stock}"
+                )
 
         except Exception as e:
             app.logger.error(f"Error rolling back stock for items: {str(e)}")

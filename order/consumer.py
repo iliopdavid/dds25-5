@@ -226,6 +226,7 @@ class OrderConsumer:
                                 "order.payment.rollback",
                                 {
                                     "user_id": order.user_id,
+                                    "order_id": order_id,
                                     "total_amount": order.total_cost,
                                 },
                             )

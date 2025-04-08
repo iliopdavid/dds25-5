@@ -92,7 +92,17 @@ class PaymentConsumer:
     def handle_payment_rollback(self, stock_failure_data):
         user_id = stock_failure_data.get("user_id")
         amount = stock_failure_data.get("total_amount")
-        self.rollback_credit(user_id, amount)
+        order_id = stock_failure_data.get("order_id")
+
+        if not all([user_id, amount, order_id]):
+            from app import app
+
+            app.logger.error(
+                f"Invalid rollback data: missing required fields - {stock_failure_data}"
+            )
+            return
+
+        self.rollback_credit(user_id, amount, order_id)
 
     def process_payment(self, payment_data):
         from app import get_user_from_db, app
@@ -119,12 +129,10 @@ class PaymentConsumer:
             user_entry.credit -= int(amount)
 
             # Use Redis pipeline for multiple commands
-            pipeline = self.redis_client.pipeline()
-
             # Update Redis with new credit value using the pipeline
-            pipeline.set(user_id, msgpack.encode(user_entry))
-
             # Execute the pipeline
+            pipeline = self.redis_client.pipeline()
+            pipeline.set(user_id, msgpack.encode(user_entry))
             pipeline.execute()
 
             app.logger.debug(
@@ -140,27 +148,57 @@ class PaymentConsumer:
             self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
             return {"status": "failure", "message": str(e)}
 
-    def rollback_credit(self, user_id, amount):
+    def rollback_credit(self, user_id, amount, order_id):
         from app import get_user_from_db, app
+
+        rollback_key = f"rollback:{order_id}:{user_id}"
+
+        # Skip if already rolled back
+        if self.redis_client.exists(rollback_key):
+            app.logger.info(
+                f"Rollback for order {order_id} already processed. Skipping."
+            )
+            return
 
         try:
             user_entry = get_user_from_db(user_id)
+            previous_credit = user_entry.credit
             user_entry.credit += int(amount)
 
-            # Use Redis pipeline for multiple commands
-            pipeline = self.redis_client.pipeline()
+            # Update user credit in Redis
+            self.redis_client.set(user_id, msgpack.encode(user_entry))
 
-            # Update Redis with the rolled-back credit value using the pipeline
-            pipeline.set(user_id, msgpack.encode(user_entry))
+            # Mark rollback as processed
+            self.redis_client.setex(rollback_key, 86400, "processed")
 
-            # Execute the pipeline
-            pipeline.execute()
-
-            app.logger.debug(
-                f"Credit for user {user_id} rolled back by {amount}. New credit: {user_entry.credit}"
+            app.logger.info(
+                f"Credit rollback successful for user {user_id}, order {order_id}. "
+                f"Amount: {amount}, Previous: {previous_credit}, New: {user_entry.credit}"
             )
+
+            self.producer.send_message(
+                "payment.rollback.completed",
+                {
+                    "order_id": order_id,
+                    "user_id": user_id,
+                    "amount": amount,
+                    "status": "SUCCESS",
+                },
+            )
+
         except Exception as e:
-            app.logger.error(f"Error rolling back credit for {user_id}: {str(e)}")
+            app.logger.error(
+                f"Error rolling back credit for user {user_id}, order {order_id}: {str(e)}"
+            )
+            self.producer.send_message(
+                "payment.rollback.failed",
+                {
+                    "order_id": order_id,
+                    "user_id": user_id,
+                    "amount": amount,
+                    "error": str(e),
+                },
+            )
 
     def cleanup(self):
         if self.connection and self.connection.is_open:
