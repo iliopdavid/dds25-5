@@ -8,7 +8,9 @@ class OrderProducer:
         self.channel = None
         self._connect()
 
-        self.channel.exchange_declare(exchange="order.exchange", exchange_type="topic")
+        self.channel.exchange_declare(
+            exchange="order.exchange", exchange_type="topic", durable=True
+        )
 
     def _connect(self):
         from app import app
@@ -19,7 +21,7 @@ class OrderProducer:
             )
             self.channel = self.connection.channel()
             self.channel.exchange_declare(
-                exchange="order.exchange", exchange_type="topic"
+                exchange="order.exchange", exchange_type="topic", durable=True
             )
         except Exception as e:
             app.logger.error(f"Failed to connect to RabbitMQ: {e}")

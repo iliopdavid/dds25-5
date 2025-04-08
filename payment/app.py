@@ -11,7 +11,6 @@ import requests
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
 from consumer import PaymentConsumer
-from producer import PaymentProducer
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"

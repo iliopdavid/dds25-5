@@ -14,9 +14,11 @@ class OrderConsumer:
         self._connect()
 
         # Ensure the exchanges exist
-        self.channel.exchange_declare(exchange="stock.exchange", exchange_type="direct")
         self.channel.exchange_declare(
-            exchange="payment.exchange", exchange_type="direct"
+            exchange="stock.exchange", exchange_type="direct", durable=True
+        )
+        self.channel.exchange_declare(
+            exchange="payment.exchange", exchange_type="direct", durable=True
         )
 
         for queue in self.queue_names:
@@ -120,29 +122,33 @@ class OrderConsumer:
 
     # handle the event notifying that the payment processing has been completed
     def handle_payment_processed(self, order_id, value):
-        from app import app
-
         payment_status = value["status"]
         self.update_order_status(order_id, "payment_status", payment_status)
-
-        if self.order_successfully_processed(order_id):
-            self.complete_order(order_id)
-        elif self.payment_failed_but_stock_succeeded(order_id):
-            self.initiate_rollback(order_id, "order.stock.rollback")
-        elif self.stock_failed_but_payment_succeeded(order_id):
-            self.initiate_rollback(order_id, "order.payment.rollback")
+        self.evaluate_order_state(order_id)
 
     # handle the event notifying that the stock processing has been completed
     def handle_stock_updated(self, order_id, value):
         stock_status = value["status"]
         self.update_order_status(order_id, "stock_status", stock_status)
+        self.evaluate_order_state(order_id)
 
-        if self.order_successfully_processed(order_id):
+    def evaluate_order_state(self, order_id):
+        from app import app
+
+        order_bytes = self.redis_client.hgetall(f"order:{order_id}")
+        order = {k.decode(): v.decode() for k, v in order_bytes.items()}
+
+        stock_status = order.get("stock_status")
+        payment_status = order.get("payment_status")
+
+        app.logger.debug(f"Evaluating order state: {order}")
+
+        if stock_status == "SUCCESS" and payment_status == "SUCCESS":
             self.complete_order(order_id)
-        elif self.stock_failed_but_payment_succeeded(order_id):
-            self.initiate_rollback(order_id, "order.payment.rollback")
-        elif self.payment_failed_but_stock_succeeded(order_id):
+        elif stock_status == "SUCCESS" and payment_status == "FAILED":
             self.initiate_rollback(order_id, "order.stock.rollback")
+        elif stock_status == "FAILED" and payment_status == "SUCCESS":
+            self.initiate_rollback(order_id, "order.payment.rollback")
 
     def handle_stock_rollbacked(self, order_id, value):
         self.update_order_status(order_id, "rollback_status", "COMPLETED")

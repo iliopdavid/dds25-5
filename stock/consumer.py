@@ -16,7 +16,9 @@ class StockConsumer:
         self._connect()
 
         # Ensure the exchange exists
-        self.channel.exchange_declare(exchange="order.exchange", exchange_type="topic")
+        self.channel.exchange_declare(
+            exchange="order.exchange", exchange_type="topic", durable=True
+        )
 
         # Declare and bind queues
         for queue in self.queues:

@@ -11,7 +11,7 @@ class PaymentProducer:
 
         # Declare the exchange and queue
         self.channel.exchange_declare(
-            exchange="payment.exchange", exchange_type="direct"
+            exchange="payment.exchange", exchange_type="direct", durable=True
         )
 
     def _connect(self):

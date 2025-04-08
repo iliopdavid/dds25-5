@@ -226,16 +226,32 @@ def rollback_stock(removed_items: dict[str, int]):
 
 @app.post("/checkout/<order_id>")
 def checkout(order_id: str):
-    order_entry: OrderValue = get_order_from_db(order_id)
+    try:
+        order_entry: OrderValue = get_order_from_db(order_id)
 
-    # Send an event for
-    # - Payment service to deduct credit
-    # - Stock Service to reduce stock
-    producer.send_checkout_called(
-        order_id, order_entry.user_id, order_entry.total_cost, order_entry.items
-    )
+        # Send an event for
+        # - Payment service to deduct credit
+        # - Stock Service to reduce stock
+        producer.send_checkout_called(  # Use app's producer instance
+            order_id, order_entry.user_id, order_entry.total_cost, order_entry.items
+        )
 
-    return jsonify({"message": "Order checkout initiated"}), 200
+        return jsonify({"message": "Order checkout initiated"}), 200
+    except ConnectionError as e:
+        # Handle the case where publishing to RabbitMQ failed
+        app.logger.error(
+            f"Checkout initiation failed for order {order_id}: Could not publish event - {e}"
+        )
+        # Return an appropriate error response to the client
+        return (
+            jsonify(
+                {"error": "Failed to initiate checkout process due to messaging issue."}
+            ),
+            503,
+        )  # Service Unavailable
+    except Exception as e:
+        app.logger.error(f"Checkout initiation failed for order {order_id}: {e}")
+        return jsonify({"error": "Internal server error during checkout."}), 500
 
 
 if __name__ == "__main__":

@@ -9,7 +9,9 @@ class StockProducer:
         self._connect()
 
         # Declare the exchange
-        self.channel.exchange_declare(exchange="stock.exchange", exchange_type="direct")
+        self.channel.exchange_declare(
+            exchange="stock.exchange", exchange_type="direct", durable=True
+        )
 
     def _connect(self):
         from app import app
