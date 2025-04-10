@@ -169,7 +169,7 @@ class PaymentConsumer:
                 )
                 return {"status": "SUCCESS"}
             else:
-                app.logger.error(f"There was an error with processing payment")
+                app.logger.debug(f"Deducting credit failed")
                 # self.send_payment_processed_event(order_id, "FAILURE")
                 return {"status": "FAILURE"}
 
@@ -244,7 +244,7 @@ class PaymentConsumer:
                 )
                 return {"status": "SUCCESS"}
             else:
-                app.logger.error(
+                app.logger.debug(
                     f"There was an issue with rolling back user credit {result}"
                 )
                 self.producer.send_message(
