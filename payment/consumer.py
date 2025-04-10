@@ -20,6 +20,8 @@ class PaymentConsumer:
             exchange="order.exchange", exchange_type="topic", durable=True
         )
 
+        self.channel.basic_qos(prefetch_count=10)
+
         # Declare and bind queues
         for queue in self.queue_names:
             self.channel.queue_declare(queue=queue)
@@ -55,7 +57,7 @@ class PaymentConsumer:
 
         for queue in self.queue_names:
             self.channel.basic_consume(
-                queue=queue, on_message_callback=self.handle_message, auto_ack=True
+                queue=queue, on_message_callback=self.handle_message, auto_ack=False
             )
 
         app.logger.info("Waiting for messages. To exit press CTRL+C")
@@ -77,8 +79,10 @@ class PaymentConsumer:
                 self.process_payment(message)
             elif method.routing_key == "order.payment.rollback":
                 self.handle_payment_rollback(message)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
         except Exception as e:
             app.logger.error(f"Error processing message: {e}")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def send_payment_processed_event(self, order_id, user_id, status, total_amount):
         event_data = {
@@ -105,75 +109,94 @@ class PaymentConsumer:
         self.rollback_credit(user_id, amount, order_id)
 
     def process_payment(self, payment_data):
-        from app import get_user_from_db, app
+        from app import app
 
         order_id = payment_data.get("order_id")
         user_id = payment_data.get("user_id")
         amount = payment_data.get("total_amount")
 
         try:
-            user_entry = get_user_from_db(user_id)
 
-            # Check credit before proceeding
-            if user_entry.credit < int(amount):
+            deduct_credit_lua = """
+                local key = KEYS[1]
+                local amount = tonumber(ARGV[1])
+                local encoded = redis.call("GET", key)
+
+                if not encoded then
+                    return {err = "user_not_found"}
+                end
+
+                local msgpack = cmsgpack.unpack(encoded)
+                if msgpack.credit < amount then
+                    return {err = "insufficient_credit"}
+                end
+
+                msgpack.credit = msgpack.credit - amount
+                redis.call("SET", key, cmsgpack.pack(msgpack))
+
+                return {ok = "success"}
+                """
+
+            result = self.redis_client.eval(
+                deduct_credit_lua,
+                1,
+                str(user_id),
+                amount,
+            )
+
+            if isinstance(result, dict) and result.get("err") == "insufficient_credit":
                 app.logger.debug(
-                    f"Credit for user {user_id} insufficient. Payment failed."
+                    f"Insufficient credit for user {user_id}. Payment failed."
                 )
                 self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
-                return {
-                    "status": "failure",
-                    "message": "Insufficient credit for user!",
-                }
+                return
 
-            # Deduct credit
-            user_entry.credit -= int(amount)
-
-            # Use Redis pipeline for multiple commands
-            # Update Redis with new credit value using the pipeline
-            # Execute the pipeline
-            pipeline = self.redis_client.pipeline()
-            pipeline.set(user_id, msgpack.encode(user_entry))
-            pipeline.execute()
-
-            app.logger.debug(
-                f"Credit for user {user_id} reduced by {amount}. New credit: {user_entry.credit}"
-            )
+            app.logger.debug(f"Credit for user {user_id} reduced by {amount}.")
 
             # Send success event to RabbitMQ
             self.send_payment_processed_event(order_id, user_id, "SUCCESS", amount)
-            return {"status": "success", "message": "User credit updated successfully"}
+            return
 
         except Exception as e:
             app.logger.error(f"Error processing payment: {e}")
             self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
-            return {"status": "failure", "message": str(e)}
-
-    def rollback_credit(self, user_id, amount, order_id):
-        from app import get_user_from_db, app
-
-        rollback_key = f"rollback:{order_id}:{user_id}"
-
-        # Skip if already rolled back
-        if self.redis_client.exists(rollback_key):
-            app.logger.info(
-                f"Rollback for order {order_id} already processed. Skipping."
-            )
             return
 
+    def rollback_credit(self, user_id, amount, order_id):
+        from app import app
+
         try:
-            user_entry = get_user_from_db(user_id)
-            previous_credit = user_entry.credit
-            user_entry.credit += int(amount)
+            rollback_credit_lua = """
+            local user_id = KEYS[1]
+            local amount = tonumber(ARGV[1])
 
-            # Update user credit in Redis
-            self.redis_client.set(user_id, msgpack.encode(user_entry))
+            local user_data = redis.call("GET", user_id)
+            if not user_data then
+                return {err = "user_not_found"}
+            end
 
-            # Mark rollback as processed
-            self.redis_client.setex(rollback_key, 86400, "processed")
+            local user = cmsgpack.unpack(user_data)
+
+            -- Rollback the user's credit by adding the specified amount
+            user.credit = user.credit + amount
+
+            -- Update the user data in Redis
+            local updated_user_data = cmsgpack.pack(user)
+            redis.call("SET", user_id, updated_user_data)
+
+            return {ok = "rollback_successful"}
+            """
+
+            result = self.redis_client.eval(
+                rollback_credit_lua, 1, str(user_id), amount
+            )
+
+            if isinstance(result, dict) and result.get("err"):
+                app.logger.warning(f"Rollback failed: {result['err']}")
+                return
 
             app.logger.info(
-                f"Credit rollback successful for user {user_id}, order {order_id}. "
-                f"Amount: {amount}, Previous: {previous_credit}, New: {user_entry.credit}"
+                f"Credit rollback successful for user {user_id}, order {order_id}. Amount: {amount}"
             )
 
             self.producer.send_message(

@@ -84,7 +84,6 @@ class OrderConsumer:
     def handle_message(self, ch, method, properties, body):
         from app import app
 
-        # Ensure RabbitMQ connection is open before handling messages
         self._ensure_connection()
 
         try:
@@ -95,14 +94,6 @@ class OrderConsumer:
             app.logger.debug(
                 f"message received with topic {topic} and content {message}"
             )
-
-            # Prevent duplicate processing using Redis SETNX
-            if not self.set_idempotency_key(order_id, topic):
-                app.logger.warning(
-                    f"Duplicate message ignored: {topic} for order {order_id}"
-                )
-                ch.basic_ack(delivery_tag=method.delivery_tag)
-                return
 
             if topic == "payment.processed":
                 self.handle_payment_processed(order_id, message)
@@ -143,9 +134,6 @@ class OrderConsumer:
         app.logger.debug(
             f"Evaluating order state: stock={stock_status} and payment={payment_status}"
         )
-        app.logger.info(
-            f"output: {stock_status == 'SUCCESS' and payment_status == 'FAILED'} or {stock_status == 'FAILED' and payment_status == 'SUCCESS'}"
-        )
 
         if stock_status == "SUCCESS" and payment_status == "SUCCESS":
             self.complete_order(order_id)
@@ -161,111 +149,166 @@ class OrderConsumer:
         self.update_order_status(order_id, "rollback_status", "COMPLETED")
 
     def update_order_status(self, order_id, field, status):
-        from app import OrderValue
+        from app import app
 
         try:
-            # Retry the transaction using watch and multi for atomicity
-            while True:
-                with self.redis_client.pipeline() as pipe:
-                    try:
-                        # Watch the order key
-                        pipe.watch(order_id)
+            # Lua script to update the order's status atomically
+            update_order_lua = """
+                local order_id = KEYS[1]
+                local field = ARGV[1]
+                local status = ARGV[2]
 
-                        # Fetch the current order entry
-                        user_bytes = pipe.get(order_id)
-                        if not user_bytes:
-                            pipe.unwatch()
-                            return
+                local order_data = redis.call("GET", order_id)
 
-                        order: OrderValue = msgpack.decode(user_bytes, type=OrderValue)
-                        setattr(order, field, status)
+                if not order_data then
+                    return {err = "order_not_found"}
+                end
 
-                        # Start the transaction
-                        pipe.multi()
-                        pipe.set(order_id, msgpack.encode(order))
-                        pipe.execute()
+                local order = cmsgpack.unpack(order_data)
 
-                        break  # Break out of loop if transaction is successful
-                    except redis.WatchError:
-                        # Transaction failed, retry
-                        continue
-        except redis.exceptions.RedisError:
-            from app import app
+                -- Dynamically set the field value
+                order[field] = status
 
-            app.logger.exception(f"Error updating order {order_id} status")
+                -- Save the updated order back to Redis
+                redis.call("SET", order_id, cmsgpack.pack(order))
+
+                return {ok = "status_updated"}
+            """
+
+            # Execute Lua script
+            result = self.redis_client.eval(
+                update_order_lua,
+                1,
+                order_id,
+                field,
+                status,
+            )
+
+            # Handle Lua script result
+            if isinstance(result, dict) and result.get("err") == "order_not_found":
+                app.logger.warning(f"No order found to update: {order_id}")
+                return {"status": "failure", "message": "Order not found"}
+
+            app.logger.debug(
+                f"Order {order_id} status for field {field} successfully updated to {status}."
+            )
+
+            return {"status": "success", "message": "Order status updated"}
+
+        except Exception as e:
+            app.logger.exception(f"Error updating order {order_id} status: {str(e)}")
+            return {"status": "failure", "message": f"Error updating order: {str(e)}"}
 
     def initiate_rollback(self, order_id, event):
         from app import app, OrderValue
 
         try:
-            while True:
-                with self.redis_client.pipeline() as pipe:
-                    try:
-                        pipe.watch(order_id)
-                        entry = pipe.get(order_id)
-                        if not entry:
-                            pipe.unwatch()
-                            app.logger.warning(
-                                f"No order found in Redis to rollback: {order_id}"
-                            )
-                            return
 
-                        order: OrderValue = msgpack.decode(entry, type=OrderValue)
+            order: OrderValue = self.get_order_from_db(order_id)
+            # Lua script to check the order and update rollback status
+            initiate_rollback_lua = """
+                local order_id = KEYS[1]
+                local rollback_status = 'INITIATED'
+                local order_data = redis.call("GET", order_id)
 
-                        app.logger.debug(
-                            f"rollback initiated!!!!! event: {event}, orderid {order_id}, order entry {order}"
-                        )
+                if not order_data then
+                    return {err = "order_not_found"}
+                end
 
-                        if event == "order.stock.rollback":
-                            self.producer.send_event(
-                                "order.stock.rollback",
-                                {"order_id": order_id, "items": order.items},
-                            )
-                        elif event == "order.payment.rollback":
-                            self.producer.send_event(
-                                "order.payment.rollback",
-                                {
-                                    "user_id": order.user_id,
-                                    "order_id": order_id,
-                                    "total_amount": order.total_cost,
-                                },
-                            )
+                local order = cmsgpack.unpack(order_data)
 
-                        order.rollback_status = "INITIATED"
-                        pipe.multi()
-                        pipe.set(order_id, msgpack.encode(order))
-                        pipe.execute()
-                        break  # Exit the loop if successful
-                    except redis.WatchError:
-                        continue
-        except redis.exceptions.RedisError:
-            app.logger.exception(f"Error initiating rollback for order {order_id}")
+                -- Update rollback status and store the updated order data
+                order.rollback_status = rollback_status
+                redis.call("SET", order_id, cmsgpack.pack(order))
+
+                return {ok = "rollback_initiated"}
+            """
+
+            # Execute Lua script
+            result = self.redis_client.eval(
+                initiate_rollback_lua,
+                1,
+                order_id,
+            )
+
+            # Handle Lua script result
+            if isinstance(result, dict) and result.get("err") == "order_not_found":
+                app.logger.warning(f"No order found to rollback: {order_id}")
+                return {"status": "failure", "message": "Order not found"}
+
+            app.logger.debug(f"Rollback initiated for order {order_id}, event: {event}")
+
+            # Publish the event
+            if event == "order.stock.rollback":
+                self.producer.send_event(
+                    "order.stock.rollback",
+                    {"order_id": order_id, "items": order.items},
+                )
+            elif event == "order.payment.rollback":
+                self.producer.send_event(
+                    "order.payment.rollback",
+                    {
+                        "user_id": order.user_id,
+                        "order_id": order_id,
+                        "total_amount": order.total_cost,
+                    },
+                )
+
+            return {"status": "success", "message": "Rollback initiated"}
+
+        except Exception as e:
+            app.logger.exception(
+                f"Error initiating rollback for order {order_id}: {str(e)}"
+            )
+            return {
+                "status": "failure",
+                "message": f"Error initiating rollback: {str(e)}",
+            }
 
     def complete_order(self, order_id):
-        from app import app, OrderValue
+        from app import app
 
         try:
-            while True:
-                with self.redis_client.pipeline() as pipe:
-                    try:
-                        pipe.watch(order_id)
-                        entry = pipe.get(order_id)
-                        if not entry:
-                            pipe.unwatch()
-                            return
+            # Lua script to update the order's status atomically
+            complete_order_lua = """
+                local order_id = KEYS[1]
+                local order_data = redis.call("GET", order_id)
 
-                        order: OrderValue = msgpack.decode(entry, type=OrderValue)
-                        order.stock_status = "COMPLETED"
-                        order.payment_status = "COMPLETED"
+                if not order_data then
+                    return {err = "order_not_found"}
+                end
 
-                        pipe.multi()
-                        pipe.set(order_id, msgpack.encode(order))
-                        pipe.execute()
-                        break
-                    except redis.WatchError:
-                        continue
-        except redis.exceptions.RedisError:
-            app.logger.exception(f"Error completing order {order_id}")
+                local order = cmsgpack.unpack(order_data)
+
+                -- Update order statuses
+                order.stock_status = "COMPLETED"
+                order.payment_status = "COMPLETED"
+
+                -- Save the updated order back to Redis
+                redis.call("SET", order_id, cmsgpack.pack(order))
+
+                return {ok = "order_completed"}
+            """
+
+            # Execute Lua script
+            result = self.redis_client.eval(
+                complete_order_lua,
+                1,
+                order_id,
+            )
+
+            # Handle Lua script result
+            if isinstance(result, dict) and result.get("err") == "order_not_found":
+                app.logger.warning(f"No order found to complete: {order_id}")
+                return {"status": "failure", "message": "Order not found"}
+
+            app.logger.debug(f"Order {order_id} successfully completed.")
+
+            return {"status": "success", "message": "Order completed"}
+
+        except Exception as e:
+            app.logger.exception(f"Error completing order {order_id}: {str(e)}")
+            return {"status": "failure", "message": f"Error completing order: {str(e)}"}
 
     def get_order_from_db(self, order_id):
         from app import OrderValue
@@ -276,10 +319,6 @@ class OrderConsumer:
             msgpack.decode(entry, type=OrderValue) if entry else None
         )
         return entry
-
-    def set_idempotency_key(self, order_id, topic):
-        key = f"idempotency:{order_id}:{topic}"
-        return self.redis_client.setnx(key, "processed")
 
     def cleanup(self):
         if self.connection and self.connection.is_open:

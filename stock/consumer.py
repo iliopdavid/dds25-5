@@ -83,7 +83,7 @@ class StockConsumer:
             app.logger.error(f"Error processing message: {e}")
 
     def process_stock(self, stock_data):
-        from app import app, get_item_from_db
+        from app import app
 
         app.logger.debug(f"Consuming event {stock_data}")
 
@@ -92,64 +92,89 @@ class StockConsumer:
         items = stock_data.get("items")
 
         try:
-            while True:
-                pipeline = self.redis_client.pipeline()
+            # Lua script to check stock and update it atomically
+            process_stock_lua = """
+                local items = cmsgpack.unpack(ARGV[1])
+                local user_key = KEYS[1]
+                local ttl = tonumber(ARGV[2])
 
-                try:
-                    # Watch the item stock entries
-                    for item_id in items:
-                        pipeline.watch(item_id)
+                -- Table to store errors and rollback information
+                local errors = {}
+                local rollback_data = {}
 
-                    # Check stock levels for each item
-                    for item_id, quantity in items.items():
-                        # Get item details from Redis database
-                        item_entry = get_item_from_db(item_id)
-                        if item_entry.stock < int(quantity):
-                            pipeline.unwatch()
-                            app.logger.debug(
-                                f"Item {item_id} stock is reduced to below 0."
-                            )
-                            self.send_stock_processed_event(
-                                order_id, user_id, "FAILURE", items
-                            )
-                            return {
-                                "status": "failure",
-                                "message": f"Not enough stock for item {item_id}.",
-                            }
+                -- Iterate over items and check stock levels
+                for item_id, quantity in pairs(items) do
+                    local item_key = item_id
+                    local item_data = redis.call("GET", item_key)
 
-                    # Start the transaction
-                    pipeline.multi()
+                    if not item_data then
+                        errors[item_id] = "item_not_found"
+                    else
+                        local item = cmsgpack.unpack(item_data)
+                        if item.stock < quantity then
+                            errors[item_id] = "insufficient_stock"
+                        else
+                            -- Store item data for rollback purposes (before deduction)
+                            rollback_data[item_id] = item.stock
 
-                    # Update stock for each item
-                    for item_id, quantity in items.items():
-                        item_entry = get_item_from_db(item_id)
-                        item_entry.stock -= int(quantity)
-                        value = msgpack.encode(item_entry)
-                        pipeline.set(
-                            item_id, value
-                        )  # Queue the command to update stock in Redis
-                        app.logger.debug(
-                            f"Item {item_id} stock reduced by {quantity}. New stock: {item_entry.stock}"
-                        )
+                            -- Reduce stock
+                            item.stock = item.stock - quantity
+                            redis.call("SET", item_key, cmsgpack.pack(item))
+                        end
+                    end
+                end
 
-                    # Execute the pipeline
-                    pipeline.execute()
+                -- If there are any errors, rollback any stock deductions and return the error table
+                if next(errors) then
+                    -- Rollback all the previous stock reductions
+                    for item_id, prev_stock in pairs(rollback_data) do
+                        local item_key = item_id
+                        local item_data = redis.call("GET", item_key)
+                        local item = cmsgpack.unpack(item_data)
+                        item.stock = prev_stock  -- Restore the previous stock value
+                        redis.call("SET", item_key, cmsgpack.pack(item))
+                    end
+                    return cmsgpack.pack(errors)
+                end
 
-                    # If everything succeeds, send a success event
-                    self.send_stock_processed_event(order_id, user_id, "SUCCESS", items)
-                    return {
-                        "status": "success",
-                        "message": "Stock updated successfully",
-                    }
+                -- If no errors, return nil (successful operation)
+                return nil
+            """
 
-                except redis.WatchError:
-                    # Retry if the watched key was modified by another transaction
-                    app.logger.info(f"Retrying due to WatchError for order {order_id}")
+            # Execute the Lua script
+            result = self.redis_client.eval(
+                process_stock_lua,
+                len(items),  # Number of KEYS (one for each item)
+                *[str(item_id) for item_id in items],  # KEYS, one for each item
+                msgpack.encode(items),  # ARGV[1] - item stock quantities
+                86400,  # ARGV[2] - TTL for rollback (1 day)
+            )
+
+            # Handle the result of the Lua script
+            if result:
+                errors = msgpack.unpack(result)
+                if len(errors) > 0:
+                    app.logger.debug(
+                        "One or more items have insufficient stock or were not found."
+                    )
+                    self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
+                    return
+
+            app.logger.debug(
+                f"Stock successfully reduced for items in order {order_id}."
+            )
+
+            # Send success event to RabbitMQ
+            self.send_stock_processed_event(order_id, user_id, "SUCCESS", items)
+            return
 
         except Exception as e:
             app.logger.error(f"Error processing stock for order {order_id}: {e}")
+
+            # Send failure event to RabbitMQ
             self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
-            return {"status": "failure", "message": str(e)}
+
+            return
 
     def send_stock_processed_event(self, order_id, user_id, status, items):
         event_data = {
@@ -173,26 +198,66 @@ class StockConsumer:
         )
 
     def rollback_stock(self, items):
-        from app import app, get_item_from_db
+        from app import app
 
         try:
-            for item_id, quantity in items.items():
-                # Fetch item from DB (likely Redis or your data store)
-                item_entry = get_item_from_db(item_id)
+            # Lua script to rollback stock atomically
+            rollback_stock_lua = """
+                local items = cmsgpack.unpack(ARGV[1])
+                local errors = {}
 
-                # Increment stock
-                item_entry.stock += int(quantity)
+                -- Iterate over items and rollback stock
+                for item_id, quantity in pairs(items) do
+                    local item_key = item_id
+                    local item_data = redis.call("GET", item_key)
 
-                # Encode and store it back
-                value = msgpack.encode(item_entry)
-                self.redis_client.set(item_id, value)
+                    if not item_data then
+                        errors[item_id] = "item_not_found"
+                    else
+                        local item = cmsgpack.unpack(item_data)
+                        -- Rollback stock (increment)
+                        item.stock = item.stock + quantity
+                        redis.call("SET", item_key, cmsgpack.pack(item))
+                    end
+                end
 
-                app.logger.debug(
-                    f"Rolled back stock for item {item_id}. Quantity: {quantity}. New stock: {item_entry.stock}"
-                )
+                -- If there are any errors, return the error table
+                if next(errors) then
+                    return cmsgpack.pack(errors)
+                end
+
+                -- If no errors, return nil (successful operation)
+                return nil
+            """
+
+            # Execute the Lua script
+            result = self.redis_client.eval(
+                rollback_stock_lua,
+                len(items),  # Number of KEYS (one for each item)
+                *[str(item_id) for item_id in items],  # KEYS, one for each item
+                msgpack.encode(
+                    items
+                ),  # ARGV[1] - item stock quantities (rollback amounts)
+            )
+
+            # Handle the result of the Lua script
+            if result:
+                errors = msgpack.unpack(result)
+                if len(errors) > 0:
+                    app.logger.debug("Error rolling back some items.")
+                    for item_id, error in errors.items():
+                        if error == "item_not_found":
+                            app.logger.debug(
+                                f"Item {item_id} not found in stock during rollback."
+                            )
+                    return
+
+            app.logger.debug(f"Stock successfully rolled back for items.")
+            return
 
         except Exception as e:
             app.logger.error(f"Error rolling back stock for items: {str(e)}")
+            return
 
     def cleanup(self):
         if self.connection and self.connection.is_open:

@@ -2,17 +2,12 @@ import base64
 import logging
 import os
 import atexit
-import random
-import threading
 import uuid
-
 import redis
 import requests
-import pika
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
-from consumer import OrderConsumer
 from producer import OrderProducer
 
 DB_ERROR_STR = "DB error"
@@ -27,17 +22,15 @@ LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 app = Flask("order-service")
 app.logger.setLevel(logging.INFO)
 
-db: redis.Redis = redis.Redis(
+db = redis.Redis(
     host=os.environ["REDIS_HOST"],
     port=int(os.environ["REDIS_PORT"]),
     password=os.environ["REDIS_PASSWORD"],
     db=int(os.environ["REDIS_DB"]),
 )
 
-consumer = OrderConsumer(db)
-producer = OrderProducer()
 
-
+# Helper functions and classes
 def recover_from_logs():
     with open(LOG_PATH, "r") as file:
         for line in file:
@@ -57,17 +50,6 @@ def on_start():
             return abort(400, DB_ERROR_STR)
 
 
-def start_consumer():
-    app.logger.debug("Consumer started!")
-    consumer.consume_messages()
-
-
-def start_consumer_thread():
-    consumer_thread = threading.Thread(target=start_consumer)
-    consumer_thread.daemon = True
-    consumer_thread.start()
-
-
 def close_db_connection():
     db.close()
 
@@ -75,8 +57,34 @@ def close_db_connection():
 atexit.register(close_db_connection)
 
 
+class OrderValue(Struct):
+    paid: bool
+    items: dict[str, int]
+    user_id: str
+    total_cost: int
+    stock_status: str = "PENDING"
+    payment_status: str = "PENDING"
+    rollback_status: str = "NONE"
+
+
+def get_order_from_db(order_id: str) -> OrderValue | None:
+    try:
+        entry: bytes = db.get(order_id)
+    except redis.exceptions.RedisError:
+        return abort(400, DB_ERROR_STR)
+    entry: OrderValue | None = msgpack.decode(entry, type=OrderValue) if entry else None
+    if entry is None:
+        abort(400, f"Order: {order_id} not found!")
+    return entry
+
+
+def log(kv_pairs: dict):
+    with open(LOG_PATH, "a") as log_file:
+        for k, v in kv_pairs.items():
+            log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
+
+
 def complete_order(order_id):
-    # todo: fix this potentially
     # Both payment and stock were successful, mark the order as completed
     order_entry = get_order_from_db(order_id)
     order_entry.paid = True
@@ -91,36 +99,25 @@ def complete_order(order_id):
     app.logger.debug("Checkout successful")
 
 
-class OrderValue(Struct):
-    paid: bool
-    items: dict[str, int]
-    user_id: str
-    total_cost: int
-    stock_status: str
-    payment_status: str
-    rollback_status: str
-
-
-def get_order_from_db(order_id: str) -> OrderValue | None:
+def send_post_request(url: str):
     try:
-        # get serialized data
-        entry: bytes = db.get(order_id)
-    except redis.exceptions.RedisError:
-        return abort(400, DB_ERROR_STR)
-    # deserialize data if it exists else return null
-    entry: OrderValue | None = msgpack.decode(entry, type=OrderValue) if entry else None
-    if entry is None:
-        # if order does not exist in the database; abort
-        abort(400, f"Order: {order_id} not found!")
-    return entry
+        response = requests.post(url)
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        return response
 
 
-def log(kv_pairs: dict):
-    with open(LOG_PATH, "a") as log_file:
-        for k, v in kv_pairs.items():
-            log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
+def send_get_request(url: str):
+    try:
+        response = requests.get(url)
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        return response
 
 
+# Route handlers
 @app.post("/create/<user_id>")
 def create_order(user_id: str):
     key = str(uuid.uuid4())
@@ -130,9 +127,6 @@ def create_order(user_id: str):
             items={},
             user_id=user_id,
             total_cost=0,
-            payment_status="PENDING",
-            stock_status="PENDING",
-            rollback_status="NONE",
         )
     )
     try:
@@ -145,6 +139,8 @@ def create_order(user_id: str):
 
 @app.post("/batch_init/<n>/<n_items>/<n_users>/<item_price>")
 def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
+    import random
+
     n = int(n)
     n_items = int(n_items)
     n_users = int(n_users)
@@ -187,24 +183,6 @@ def find_order(order_id: str):
     )
 
 
-def send_post_request(url: str):
-    try:
-        response = requests.post(url)
-    except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
-    else:
-        return response
-
-
-def send_get_request(url: str):
-    try:
-        response = requests.get(url)
-    except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
-    else:
-        return response
-
-
 @app.post("/addItem/<order_id>/<item_id>/<quantity>")
 def add_item(order_id: str, item_id: str, quantity: int):
     order_entry: OrderValue = get_order_from_db(order_id)
@@ -230,46 +208,42 @@ def add_item(order_id: str, item_id: str, quantity: int):
     )
 
 
-def rollback_stock(removed_items: dict[str, int]):
-    for item_id, quantity in removed_items.items():
-        send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
-
-
 @app.post("/checkout/<order_id>")
 def checkout(order_id: str):
     try:
         order_entry: OrderValue = get_order_from_db(order_id)
-
-        # Send an event for
-        # - Payment service to deduct credit
-        # - Stock Service to reduce stock
-        producer.send_checkout_called(  # Use app's producer instance
+        # Access the worker's producer pool via the worker
+        # This relies on the worker attribute set in the gunicorn config
+        app.producer.send_checkout_called(
             order_id, order_entry.user_id, order_entry.total_cost, order_entry.items
         )
 
         return jsonify({"message": "Order checkout initiated"}), 200
     except ConnectionError as e:
-        # Handle the case where publishing to RabbitMQ failed
         app.logger.error(
             f"Checkout initiation failed for order {order_id}: Could not publish event - {e}"
         )
-        # Return an appropriate error response to the client
         return (
             jsonify(
                 {"error": "Failed to initiate checkout process due to messaging issue."}
             ),
             503,
-        )  # Service Unavailable
+        )
     except Exception as e:
         app.logger.error(f"Checkout initiation failed for order {order_id}: {e}")
         return jsonify({"error": "Internal server error during checkout."}), 500
 
 
+def rollback_stock(removed_items: dict[str, int]):
+    for item_id, quantity in removed_items.items():
+        send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
+
+
+# Initialize the app if running directly
 if __name__ == "__main__":
-    start_consumer_thread()
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
+    # When running with gunicorn
     gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
-    start_consumer_thread()
