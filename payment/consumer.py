@@ -16,9 +16,12 @@ class PaymentConsumer:
         # Initialize RabbitMQ connection
         self._connect()
 
-        # Ensure the exchange exists
+        # declare exchanges to prevent binding before initialization
         self.channel.exchange_declare(
             exchange="order.exchange", exchange_type="topic", durable=True
+        )
+        self.channel.exchange_declare(
+            exchange="stock.exchange", exchange_type="direct", durable=True
         )
 
         self.channel.basic_qos(prefetch_count=10)

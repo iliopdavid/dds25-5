@@ -18,7 +18,7 @@ class StockConsumer:
 
         # Ensure the exchange exists
         self.channel.exchange_declare(
-            exchange="order.exchange", exchange_type="topic", durable=True
+            exchange="payment.exchange", exchange_type="direct", durable=True
         )
 
         # Declare and bind queues
