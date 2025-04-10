@@ -1,4 +1,5 @@
 import json
+import uuid
 import pika
 
 
@@ -61,22 +62,13 @@ class OrderProducer:
     # Notify that the order checkout has been placed.
     def send_checkout_called(self, order_id, user_id, total_amount, items):
         message = {
+            "message_id": str(uuid.uuid4()),
             "order_id": order_id,
             "user_id": user_id,
             "total_amount": total_amount,
             "items": items,
         }
-        self.send_event("order.checkout", message)
-
-    # Send an event notifying other services that checkout has been completed
-    def send_checkout_completed(self, order_id):
-        message = {"order_id": order_id, "status": "COMPLETED"}
-        self.send_event("order.completed", message)
-
-    # Send an event notifying other services that checkout has failed
-    def send_checkout_failed(self, order_id, reason):
-        message = {"order_id": order_id, "status": "FAILED", "reason": reason}
-        self.send_event("order.failed", message)
+        self.send_event("order.payment.checkout", message)
 
     def close(self):
         if self.connection and self.connection.is_open:

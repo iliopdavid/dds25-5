@@ -1,4 +1,5 @@
 import json
+import uuid
 import pika
 from msgspec import msgpack
 from producer import StockProducer
@@ -24,10 +25,9 @@ class StockConsumer:
         for queue in self.queues:
             self.channel.queue_declare(queue=queue)
             self.channel.queue_bind(
-                exchange="order.exchange", queue=queue, routing_key="order.checkout"
-            )
-            self.channel.queue_bind(
-                exchange="order.exchange", queue=queue, routing_key="order.stock.#"
+                exchange="payment.exchange",
+                queue=queue,
+                routing_key="payment.stock.processed",
             )
 
     def _connect(self):
@@ -65,6 +65,13 @@ class StockConsumer:
             app.logger.info("Stopping consumer...")
             self.cleanup()
 
+    def is_duplicate_message(self, message_id, expiration_seconds=3600):
+        key = f"processed_msg:{message_id}"
+        result = self.redis_client.setnx(key, 1)
+        if result == 1:
+            self.redis_client.expire(key, expiration_seconds)
+        return result == 0
+
     def handle_message(self, ch, method, properties, body):
         from app import app
 
@@ -74,10 +81,17 @@ class StockConsumer:
 
         try:
             message = json.loads(body)
-            if method.routing_key == "order.checkout":
+
+            message_id = message.get("message_id")
+
+            if self.is_duplicate_message(message_id):
+                app.logger.info(f"Duplicate message detected and skipped: {message_id}")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
+            if method.routing_key == "payment.stock.processed":
                 self.process_stock(message)
-            elif method.routing_key == "order.stock.rollback":
-                self.handle_stock_rollback(message)
+
             ch.basic_ack(delivery_tag=method.delivery_tag)
         except Exception as e:
             app.logger.error(f"Error processing message: {e}")
@@ -91,6 +105,7 @@ class StockConsumer:
         order_id = stock_data.get("order_id")
         user_id = stock_data.get("user_id")
         items = stock_data.get("items")
+        total_amount = stock_data.get("total_amount")
 
         try:
             process_stock_lua = """
@@ -138,96 +153,32 @@ class StockConsumer:
                 errors = msgpack.decode(result)
                 if errors:
                     app.logger.debug("Stock check failed: " + str(errors))
-                    self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
+                    self.send_stock_failure_event(order_id, user_id, total_amount)
                     return
 
             app.logger.debug(f"Stock reduced for order {order_id}")
-            self.send_stock_processed_event(order_id, user_id, "SUCCESS", items)
+            self.send_stock_processed_event(order_id)
 
         except Exception as e:
             app.logger.error(f"Error processing stock for order {order_id}: {e}")
-            self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
+            self.send_stock_failure_event(order_id, user_id, total_amount)
 
-    def send_stock_processed_event(self, order_id, user_id, status, items):
+    def send_stock_processed_event(self, order_id):
         event_data = {
+            "message_id": str(uuid.uuid4()),
             "order_id": order_id,
-            "user_id": user_id,
-            "status": status,
-            "items": items,
+            "status": "SUCCESS",
         }
-        self.producer.send_message("stock.processed", event_data)
+        self.producer.send_message("stock.order.processed", event_data)
 
-    def handle_stock_rollback(self, payment_failure_data):
-        from app import app
-
-        order_id = payment_failure_data.get("order_id")
-        items = payment_failure_data.get("items")
-
-        # Rollback stock in case of payment failure
-        self.rollback_stock(items)
-        app.logger.debug(
-            f"Payment failure event received. Rolled back stock for order {order_id}."
-        )
-
-    def rollback_stock(self, items):
-        from app import app
-
-        try:
-            # Lua script to rollback stock atomically
-            rollback_stock_lua = """
-                local items = cmsgpack.unpack(ARGV[1])
-                local errors = {}
-
-                -- Iterate over items and rollback stock
-                for item_id, quantity in pairs(items) do
-                    local item_key = item_id
-                    local item_data = redis.call("GET", item_key)
-
-                    if not item_data then
-                        errors[item_id] = "item_not_found"
-                    else
-                        local item = cmsgpack.unpack(item_data)
-                        -- Rollback stock (increment)
-                        item.stock = item.stock + quantity
-                        redis.call("SET", item_key, cmsgpack.pack(item))
-                    end
-                end
-
-                -- If there are any errors, return the error table
-                if next(errors) then
-                    return cmsgpack.pack(errors)
-                end
-
-                -- If no errors, return nil (successful operation)
-                return nil
-            """
-
-            # Execute the Lua script
-            result = self.redis_client.eval(
-                rollback_stock_lua,
-                len(items),
-                *[str(item_id) for item_id in items],
-                msgpack.encode(items),
-            )
-
-            # Handle the result of the Lua script
-            if result:
-                errors = msgpack.decode(result)
-                if len(errors) > 0:
-                    app.logger.debug("Error rolling back some items.")
-                    for item_id, error in errors.items():
-                        if error == "item_not_found":
-                            app.logger.debug(
-                                f"Item {item_id} not found in stock during rollback."
-                            )
-                    return
-
-            app.logger.debug(f"Stock successfully rolled back for items.")
-            return
-
-        except Exception as e:
-            app.logger.error(f"Error rolling back stock for items: {str(e)}")
-            return
+    def send_stock_failure_event(self, order_id, user_id, total_amount):
+        event_data = {
+            "message_id": str(uuid.uuid4()),
+            "order_id": order_id,
+            "total_amount": total_amount,
+            "user_id": user_id,
+        }
+        self.producer.send_message("stock.payment.rollback", event_data)
 
     def cleanup(self):
         if self.connection and self.connection.is_open:

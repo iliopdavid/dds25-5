@@ -43,7 +43,6 @@ class StockProducer:
             return
 
         try:
-            # Convert data to JSON and send to the RabbitMQ exchange
             message = json.dumps(event_data)
             self.channel.basic_publish(
                 exchange="stock.exchange",

@@ -1,5 +1,4 @@
 # gunicorn_config.py
-# gunicorn_config.py
 import threading
 from consumer import PaymentConsumer
 import redis

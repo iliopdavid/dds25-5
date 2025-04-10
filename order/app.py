@@ -61,9 +61,6 @@ class OrderValue(Struct):
     items: dict[str, int]
     user_id: str
     total_cost: int
-    stock_status: str = "PENDING"
-    payment_status: str = "PENDING"
-    rollback_status: str = "NONE"
 
 
 def get_order_from_db(order_id: str) -> OrderValue | None:
@@ -81,21 +78,6 @@ def log(kv_pairs: dict):
     with open(LOG_PATH, "a") as log_file:
         for k, v in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
-
-
-def complete_order(order_id):
-    # Both payment and stock were successful, mark the order as completed
-    order_entry = get_order_from_db(order_id)
-    order_entry.paid = True
-    value = msgpack.encode(order_entry)
-    try:
-        log({order_id: value})
-        db.set(order_id, value)
-    except Exception as e:
-        # Log the error and send a failure event
-        error_message = str(e)
-        log({"error": error_message})
-    app.logger.debug("Checkout successful")
 
 
 def send_post_request(url: str):

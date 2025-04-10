@@ -1,4 +1,5 @@
 import json
+import uuid
 import pika
 from producer import PaymentProducer
 from msgspec import msgpack
@@ -25,11 +26,14 @@ class PaymentConsumer:
         # Declare and bind queues
         for queue in self.queue_names:
             self.channel.queue_declare(queue=queue)
-            self.channel.queue_bind(
-                exchange="order.exchange", queue=queue, routing_key="order.checkout"
-            )
+
             self.channel.queue_bind(
                 exchange="order.exchange", queue=queue, routing_key="order.payment.#"
+            )
+            self.channel.queue_bind(
+                exchange="stock.exchange",
+                queue=queue,
+                routing_key="stock.payment.rollback",
             )
 
     def _connect(self):
@@ -75,10 +79,16 @@ class PaymentConsumer:
         )
         try:
             message = json.loads(body)
+            message_id = message.get("message_id")
 
-            if method.routing_key == "order.checkout":
+            if self.is_duplicate_message(message_id):
+                app.logger.info(f"Duplicate message detected and skipped: {message_id}")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+
+            if method.routing_key == "order.payment.checkout":
                 self.process_payment(message)
-            elif method.routing_key == "order.payment.rollback":
+            elif method.routing_key == "stock.payment.rollback":
                 self.handle_payment_rollback(message)
 
             ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -86,29 +96,22 @@ class PaymentConsumer:
             app.logger.error(f"Error processing message: {e}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
-    def send_payment_processed_event(self, order_id, user_id, status, total_amount):
+    def send_payment_processed_event(self, order_id, items, total_amount, user_id):
         event_data = {
+            "message_id": str(uuid.uuid4()),
             "order_id": order_id,
-            "user_id": user_id,
-            "status": status,
+            "items": items,
             "total_amount": total_amount,
+            "user_id": user_id,
         }
-        self.producer.send_message("payment.processed", event_data)
+        self.producer.send_message("payment.stock.processed", event_data)
 
-    def handle_payment_rollback(self, stock_failure_data):
-        user_id = stock_failure_data.get("user_id")
-        amount = stock_failure_data.get("total_amount")
-        order_id = stock_failure_data.get("order_id")
-
-        if not all([user_id, amount, order_id]):
-            from app import app
-
-            app.logger.error(
-                f"Invalid rollback data: missing required fields - {stock_failure_data}"
-            )
-            return
-
-        self.rollback_credit(user_id, amount, order_id)
+    def is_duplicate_message(self, message_id, expiration_seconds=3600):
+        key = f"processed_msg:{message_id}"
+        result = self.redis_client.setnx(key, 1)
+        if result == 1:
+            self.redis_client.expire(key, expiration_seconds)
+        return result == 0
 
     def process_payment(self, payment_data):
         from app import app
@@ -116,8 +119,10 @@ class PaymentConsumer:
         order_id = payment_data.get("order_id")
         user_id = payment_data.get("user_id")
         amount = payment_data.get("total_amount")
+        items = payment_data.get("items")
+        total_amount = payment_data.get("total_amount")
 
-        if not all([order_id, user_id, amount]):
+        if not all([order_id, user_id, amount, items]):
             app.logger.error("Missing required payment data")
             return {"status": "FAILURE", "reason": "invalid_data"}
 
@@ -154,36 +159,43 @@ class PaymentConsumer:
             if isinstance(result, bytes):
                 result = result.decode("utf-8")
 
-            if result == "insufficient_credit":
-                app.logger.debug(
-                    f"Insufficient credit for user {user_id}. Payment failed."
-                )
-                self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
-                return {"status": "FAILURE", "reason": "insufficient_credit"}
-            elif result == "user_not_found":
-                app.logger.debug(f"User {user_id} not found. Payment failed.")
-                self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
-                return {"status": "FAILURE", "reason": "user_not_found"}
-            elif result == "success":
+            if result == "success":
                 app.logger.debug(f"Credit for user {user_id} reduced by {amount}.")
-                self.send_payment_processed_event(order_id, user_id, "SUCCESS", amount)
+                self.send_payment_processed_event(
+                    order_id, items, total_amount, user_id
+                )
                 return {"status": "SUCCESS"}
             else:
-                app.logger.error(f"Unexpected result from Redis: {result}")
-                self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
-                return {"status": "FAILURE", "reason": "unexpected_result"}
+                app.logger.error(f"There was an error with processing payment")
+                # self.send_payment_processed_event(order_id, "FAILURE")
+                return {"status": "FAILURE"}
 
         except Exception as e:
             app.logger.error(f"Error processing payment: {e}")
-            self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
-            return {"status": "FAILURE", "reason": "exception"}
+            # self.send_payment_processed_event(order_id, "FAILURE")
+            return {"status": "FAILURE"}
+
+    def handle_payment_rollback(self, stock_failure_data):
+        user_id = stock_failure_data.get("user_id")
+        amount = stock_failure_data.get("total_amount")
+        order_id = stock_failure_data.get("order_id")
+
+        if not all([user_id, amount, order_id]):
+            from app import app
+
+            app.logger.error(
+                f"Invalid rollback data: missing required fields - {stock_failure_data}"
+            )
+            return {"status": "FAILURE"}
+
+        self.rollback_credit(user_id, amount, order_id)
 
     def rollback_credit(self, user_id, amount, order_id):
         from app import app
 
         if not all([user_id, amount, order_id]):
             app.logger.error("Missing required rollback data")
-            return {"status": "FAILURE", "reason": "invalid_data"}
+            return {"status": "FAILURE"}
 
         try:
             rollback_credit_lua = """
@@ -214,48 +226,34 @@ class PaymentConsumer:
             if isinstance(result, bytes):
                 result = result.decode("utf-8")
 
-            if result == "user_not_found":
-                app.logger.warning(
-                    f"Rollback failed: user not found for user {user_id}, order {order_id}"
-                )
-                self.producer.send_message(
-                    "payment.rollback.failed",
-                    {
-                        "order_id": order_id,
-                        "user_id": user_id,
-                        "amount": amount,
-                        "status": "FAILURE",
-                        "error": "user_not_found",
-                    },
-                )
-                return {"status": "FAILURE", "reason": "user_not_found"}
-            elif result == "success":
+            if result == "success":
                 app.logger.info(
                     f"Credit rollback successful for user {user_id}, order {order_id}. Amount: {amount}"
                 )
                 self.producer.send_message(
                     "payment.rollback.completed",
                     {
+                        "message_id": str(uuid.uuid4()),
                         "order_id": order_id,
                         "user_id": user_id,
                         "amount": amount,
-                        "status": "SUCCESS",
                     },
                 )
                 return {"status": "SUCCESS"}
             else:
-                app.logger.error(f"Unexpected result from Redis: {result}")
+                app.logger.error(
+                    f"There was an issue with rolling back user credit {result}"
+                )
                 self.producer.send_message(
                     "payment.rollback.failed",
                     {
+                        "message_id": str(uuid.uuid4()),
                         "order_id": order_id,
                         "user_id": user_id,
                         "amount": amount,
-                        "status": "FAILURE",
-                        "error": "unexpected_result",
                     },
                 )
-                return {"status": "FAILURE", "reason": "unexpected_result"}
+                return {"status": "FAILURE"}
 
         except Exception as e:
             app.logger.error(
@@ -264,11 +262,10 @@ class PaymentConsumer:
             self.producer.send_message(
                 "payment.rollback.failed",
                 {
+                    "message_id": str(uuid.uuid4()),
                     "order_id": order_id,
                     "user_id": user_id,
                     "amount": amount,
-                    "status": "FAILURE",
-                    "error": str(e),
                 },
             )
             return {"status": "FAILURE", "reason": "exception"}
