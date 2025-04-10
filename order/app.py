@@ -137,16 +137,15 @@ def find_order(order_id: str):
     )
 
 
-def send_post_request(url, retries=10, delay=0.05, json=None):
-    for _ in range(retries):
-        try:
-            r = requests.post(url, json=json)
-            if r.status_code == 200:
-                time.sleep(0.01)
-                return r
-        except:
-            time.sleep(delay)
-    raise Exception(f"An error occurred posting to {url}")
+def send_post_request(url):
+    try:
+        r = requests.post(url)
+        if r.status_code == 200:
+            return r
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        raise Exception(f"An error occurred posting to {url}")
 
 
 def send_get_request(url: str):
