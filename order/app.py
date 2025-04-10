@@ -2,6 +2,7 @@ import base64
 import logging
 import os
 import atexit
+import random
 import uuid
 import redis
 import requests
@@ -13,6 +14,8 @@ DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
 
 GATEWAY_URL = os.environ["GATEWAY_URL"]
+STOCK_URL = os.environ["STOCK_URL"]
+PAYMENT_URL = os.environ["PAYMENT_URL"]
 
 LOG_DIR = "logging"
 LOG_FILENAME = "order_log.txt"
@@ -80,35 +83,26 @@ def log(kv_pairs: dict):
             log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
-def send_post_request(url: str):
-    try:
-        response = requests.post(url)
-    except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
+@app.post("/internal/recover-from-logs")
+def on_start():
+    if os.path.exists(LOG_PATH):
+        recover_from_logs()
+        return jsonify({"msg": "Recovered from logs successfully"})
     else:
-        return response
+        try:
+            with open(LOG_PATH, "x"):
+                pass
+            app.logger.debug(f"Log file created at: {LOG_PATH}")
+            return jsonify({"msg": "Log file created successfully"})
+        except FileExistsError:
+            return abort(400, DB_ERROR_STR)
 
 
-def send_get_request(url: str):
-    try:
-        response = requests.get(url)
-    except requests.exceptions.RequestException:
-        abort(400, REQ_ERROR_STR)
-    else:
-        return response
-
-
-# Route handlers
 @app.post("/create/<user_id>")
 def create_order(user_id: str):
     key = str(uuid.uuid4())
     value = msgpack.encode(
-        OrderValue(
-            paid=False,
-            items={},
-            user_id=user_id,
-            total_cost=0,
-        )
+        OrderValue(paid=False, items={}, user_id=user_id, total_cost=0)
     )
     try:
         log({key: value})
@@ -118,15 +112,8 @@ def create_order(user_id: str):
     return jsonify({"order_id": key})
 
 
-@app.post("/batch_init/<n>/<n_items>/<n_users>/<item_price>")
+@app.post("/batch_init/<int:n>/<int:n_items>/<int:n_users>/<int:item_price>")
 def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
-    import random
-
-    n = int(n)
-    n_items = int(n_items)
-    n_users = int(n_users)
-    item_price = int(item_price)
-
     def generate_entry() -> OrderValue:
         user_id = random.randint(0, n_users - 1)
         item1_id = random.randint(0, n_items - 1)
@@ -164,7 +151,27 @@ def find_order(order_id: str):
     )
 
 
-@app.post("/addItem/<order_id>/<item_id>/<quantity>")
+def send_post_request(url):
+    try:
+        r = requests.post(url)
+        if r.status_code == 200:
+            return r
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        raise Exception(f"An error occurred posting to {url}")
+
+
+def send_get_request(url: str):
+    try:
+        response = requests.get(url)
+    except requests.exceptions.RequestException:
+        abort(400, REQ_ERROR_STR)
+    else:
+        return response
+
+
+@app.post("/addItem/<order_id>/<item_id>/<int:quantity>")
 def add_item(order_id: str, item_id: str, quantity: int):
     order_entry: OrderValue = get_order_from_db(order_id)
     item_reply = send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
@@ -173,10 +180,10 @@ def add_item(order_id: str, item_id: str, quantity: int):
         abort(400, f"Item: {item_id} does not exist!")
     item_json: dict = item_reply.json()
     if item_id in order_entry.items:
-        order_entry.items[item_id] += int(quantity)
+        order_entry.items[item_id] += quantity
     else:
-        order_entry.items[item_id] = int(quantity)
-    order_entry.total_cost += int(quantity) * item_json["price"]
+        order_entry.items[item_id] = quantity
+    order_entry.total_cost += quantity * item_json["price"]
     value = msgpack.encode(order_entry)
     try:
         log({order_id: value})
@@ -213,11 +220,6 @@ def checkout(order_id: str):
     except Exception as e:
         app.logger.error(f"Checkout initiation failed for order {order_id}: {e}")
         return jsonify({"error": "Internal server error during checkout."}), 500
-
-
-def rollback_stock(removed_items: dict[str, int]):
-    for item_id, quantity in removed_items.items():
-        send_post_request(f"{GATEWAY_URL}/stock/add/{item_id}/{quantity}")
 
 
 # Initialize the app if running directly

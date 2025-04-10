@@ -1,4 +1,4 @@
 .idea
 .DS_Store
 logging/
-kafka/
+__pycache__/

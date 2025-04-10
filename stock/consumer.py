@@ -98,7 +98,7 @@ class StockConsumer:
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def process_stock(self, stock_data):
-        from app import app
+        from app import app, log
 
         app.logger.debug(f"Consuming event {stock_data}")
 
@@ -155,6 +155,34 @@ class StockConsumer:
                     app.logger.debug("Stock check failed: " + str(errors))
                     self.send_stock_failure_event(order_id, user_id, total_amount)
                     return
+
+            # ADDED
+            # for item_id, quantity in items.items():
+            #     try:
+            #         app.logger.debug(
+            #             f"Processing item_id: {item_id}, quantity: {quantity}"
+            #         )
+
+            #         item_bytes = self.redis_client.get(item_id)
+            #         if item_bytes:
+            #             app.logger.debug(
+            #                 f"Retrieved item_bytes for item_id {item_id}: {item_bytes}"
+            #             )
+            #             app.logger.debug("You are about to write to log")
+
+            #             # Log the new state for redo logging
+            #             log({item_id: item_bytes})
+            #             app.logger.debug(
+            #                 f"Redo log successfully written for item_id {item_id}"
+            #             )
+            #         else:
+            #             app.logger.warning(
+            #                 f"No item found in Redis for item_id: {item_id}"
+            #             )
+            #     except Exception as e:
+            #         app.logger.error(
+            #             f"Error processing item_id {item_id}: {e}", exc_info=True
+            #         )
 
             app.logger.debug(f"Stock reduced for order {order_id}")
             self.send_stock_processed_event(order_id)

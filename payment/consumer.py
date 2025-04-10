@@ -117,7 +117,7 @@ class PaymentConsumer:
         return result == 0
 
     def process_payment(self, payment_data):
-        from app import app
+        from app import app, log
 
         order_id = payment_data.get("order_id")
         user_id = payment_data.get("user_id")
@@ -164,6 +164,12 @@ class PaymentConsumer:
 
             if result == "success":
                 app.logger.debug(f"Credit for user {user_id} reduced by {amount}.")
+
+                # ADDED
+                # user_bytes = self.redis_client.get(str(user_id))
+                # if user_bytes:
+                #     log({user_id: user_bytes})
+
                 self.send_payment_processed_event(
                     order_id, items, total_amount, user_id
                 )
@@ -194,7 +200,7 @@ class PaymentConsumer:
         self.rollback_credit(user_id, amount, order_id)
 
     def rollback_credit(self, user_id, amount, order_id):
-        from app import app
+        from app import app, log
 
         if not all([user_id, amount, order_id]):
             app.logger.error("Missing required rollback data")
@@ -233,6 +239,11 @@ class PaymentConsumer:
                 app.logger.info(
                     f"Credit rollback successful for user {user_id}, order {order_id}. Amount: {amount}"
                 )
+                # ADDED
+                # user_bytes = self.redis_client.get(str(user_id))
+                # if user_bytes:
+                #     log({user_id: user_bytes})
+
                 self.producer.send_message(
                     "payment.rollback.completed",
                     {
