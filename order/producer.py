@@ -38,22 +38,7 @@ class OrderProducer:
     def send_event(self, routing_key, message):
         from app import app
 
-        if not self.connection or self.connection.is_closed:
-            app.logger.error("RabbitMQ channel is closed. Reconnecting...")
-            try:
-                self._connect()
-                if not self.channel:
-                    raise ConnectionError(
-                        "Failed to reconnect to RabbitMQ in send_event"
-                    )
-            except Exception as connect_err:
-                app.logger.error(
-                    f"Error during reconnect attempt in send_event: {connect_err}",
-                    exc_info=True,
-                )
-                raise ConnectionError(
-                    f"Failed to reconnect: {connect_err}"
-                ) from connect_err
+        self._ensure_connection()
 
         try:
             message_body = json.dumps(message)

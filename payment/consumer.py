@@ -75,10 +75,12 @@ class PaymentConsumer:
         )
         try:
             message = json.loads(body)
+
             if method.routing_key == "order.checkout":
                 self.process_payment(message)
             elif method.routing_key == "order.payment.rollback":
                 self.handle_payment_rollback(message)
+
             ch.basic_ack(delivery_tag=method.delivery_tag)
         except Exception as e:
             app.logger.error(f"Error processing message: {e}")
@@ -115,27 +117,31 @@ class PaymentConsumer:
         user_id = payment_data.get("user_id")
         amount = payment_data.get("total_amount")
 
+        if not all([order_id, user_id, amount]):
+            app.logger.error("Missing required payment data")
+            return {"status": "FAILURE", "reason": "invalid_data"}
+
         try:
-
             deduct_credit_lua = """
-                local key = KEYS[1]
+                local user_key = KEYS[1]
                 local amount = tonumber(ARGV[1])
-                local encoded = redis.call("GET", key)
-
+                
+                local encoded = redis.call("GET", user_key)
                 if not encoded then
-                    return {err = "user_not_found"}
+                    return redis.status_reply("user_not_found")
                 end
-
+                
                 local msgpack = cmsgpack.unpack(encoded)
                 if msgpack.credit < amount then
-                    return {err = "insufficient_credit"}
+                    return redis.status_reply("insufficient_credit")
                 end
-
+                
+                -- Update credit
                 msgpack.credit = msgpack.credit - amount
-                redis.call("SET", key, cmsgpack.pack(msgpack))
-
-                return {ok = "success"}
-                """
+                redis.call("SET", user_key, cmsgpack.pack(msgpack))
+                
+                return redis.status_reply("success")
+            """
 
             result = self.redis_client.eval(
                 deduct_credit_lua,
@@ -144,70 +150,112 @@ class PaymentConsumer:
                 amount,
             )
 
-            if isinstance(result, dict) and result.get("err") == "insufficient_credit":
+            # Convert bytes to string if needed
+            if isinstance(result, bytes):
+                result = result.decode("utf-8")
+
+            if result == "insufficient_credit":
                 app.logger.debug(
                     f"Insufficient credit for user {user_id}. Payment failed."
                 )
                 self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
-                return
-
-            app.logger.debug(f"Credit for user {user_id} reduced by {amount}.")
-
-            # Send success event to RabbitMQ
-            self.send_payment_processed_event(order_id, user_id, "SUCCESS", amount)
-            return
+                return {"status": "FAILURE", "reason": "insufficient_credit"}
+            elif result == "user_not_found":
+                app.logger.debug(f"User {user_id} not found. Payment failed.")
+                self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
+                return {"status": "FAILURE", "reason": "user_not_found"}
+            elif result == "success":
+                app.logger.debug(f"Credit for user {user_id} reduced by {amount}.")
+                self.send_payment_processed_event(order_id, user_id, "SUCCESS", amount)
+                return {"status": "SUCCESS"}
+            else:
+                app.logger.error(f"Unexpected result from Redis: {result}")
+                self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
+                return {"status": "FAILURE", "reason": "unexpected_result"}
 
         except Exception as e:
             app.logger.error(f"Error processing payment: {e}")
             self.send_payment_processed_event(order_id, user_id, "FAILURE", amount)
-            return
+            return {"status": "FAILURE", "reason": "exception"}
 
     def rollback_credit(self, user_id, amount, order_id):
         from app import app
 
+        if not all([user_id, amount, order_id]):
+            app.logger.error("Missing required rollback data")
+            return {"status": "FAILURE", "reason": "invalid_data"}
+
         try:
             rollback_credit_lua = """
-            local user_id = KEYS[1]
-            local amount = tonumber(ARGV[1])
-
-            local user_data = redis.call("GET", user_id)
-            if not user_data then
-                return {err = "user_not_found"}
-            end
-
-            local user = cmsgpack.unpack(user_data)
-
-            -- Rollback the user's credit by adding the specified amount
-            user.credit = user.credit + amount
-
-            -- Update the user data in Redis
-            local updated_user_data = cmsgpack.pack(user)
-            redis.call("SET", user_id, updated_user_data)
-
-            return {ok = "rollback_successful"}
+                local user_key = KEYS[1]
+                local amount = tonumber(ARGV[1])
+                
+                local user_data = redis.call("GET", user_key)
+                if not user_data then
+                    return redis.status_reply("user_not_found")
+                end
+                
+                local user = cmsgpack.unpack(user_data)
+                
+                -- Rollback the user's credit by adding the specified amount
+                user.credit = user.credit + amount
+                
+                -- Update the user data in Redis
+                redis.call("SET", user_key, cmsgpack.pack(user))
+                
+                return redis.status_reply("success")
             """
 
             result = self.redis_client.eval(
                 rollback_credit_lua, 1, str(user_id), amount
             )
 
-            if isinstance(result, dict) and result.get("err"):
-                app.logger.warning(f"Rollback failed: {result['err']}")
-                return
+            # Convert bytes to string if needed
+            if isinstance(result, bytes):
+                result = result.decode("utf-8")
 
-            app.logger.info(
-                f"Credit rollback successful for user {user_id}, order {order_id}. Amount: {amount}"
-            )
-
-            self.producer.send_message(
-                "payment.rollback.completed",
-                {
-                    "order_id": order_id,
-                    "user_id": user_id,
-                    "amount": amount,
-                    "status": "SUCCESS",
-                },
-            )
+            if result == "user_not_found":
+                app.logger.warning(
+                    f"Rollback failed: user not found for user {user_id}, order {order_id}"
+                )
+                self.producer.send_message(
+                    "payment.rollback.failed",
+                    {
+                        "order_id": order_id,
+                        "user_id": user_id,
+                        "amount": amount,
+                        "status": "FAILURE",
+                        "error": "user_not_found",
+                    },
+                )
+                return {"status": "FAILURE", "reason": "user_not_found"}
+            elif result == "success":
+                app.logger.info(
+                    f"Credit rollback successful for user {user_id}, order {order_id}. Amount: {amount}"
+                )
+                self.producer.send_message(
+                    "payment.rollback.completed",
+                    {
+                        "order_id": order_id,
+                        "user_id": user_id,
+                        "amount": amount,
+                        "status": "SUCCESS",
+                    },
+                )
+                return {"status": "SUCCESS"}
+            else:
+                app.logger.error(f"Unexpected result from Redis: {result}")
+                self.producer.send_message(
+                    "payment.rollback.failed",
+                    {
+                        "order_id": order_id,
+                        "user_id": user_id,
+                        "amount": amount,
+                        "status": "FAILURE",
+                        "error": "unexpected_result",
+                    },
+                )
+                return {"status": "FAILURE", "reason": "unexpected_result"}
 
         except Exception as e:
             app.logger.error(
@@ -219,9 +267,11 @@ class PaymentConsumer:
                     "order_id": order_id,
                     "user_id": user_id,
                     "amount": amount,
+                    "status": "FAILURE",
                     "error": str(e),
                 },
             )
+            return {"status": "FAILURE", "reason": "exception"}
 
     def cleanup(self):
         if self.connection and self.connection.is_open:

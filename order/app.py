@@ -8,7 +8,6 @@ import requests
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
-from producer import OrderProducer
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"

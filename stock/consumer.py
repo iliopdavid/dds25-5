@@ -1,6 +1,5 @@
 import json
 import pika
-import redis
 from msgspec import msgpack
 from producer import StockProducer
 
@@ -56,7 +55,7 @@ class StockConsumer:
 
         for queue in self.queues:
             self.channel.basic_consume(
-                queue=queue, on_message_callback=self.handle_message, auto_ack=True
+                queue=queue, on_message_callback=self.handle_message, auto_ack=False
             )
 
         app.logger.info("Waiting for messages. To exit press CTRL+C")
@@ -79,8 +78,10 @@ class StockConsumer:
                 self.process_stock(message)
             elif method.routing_key == "order.stock.rollback":
                 self.handle_stock_rollback(message)
+            ch.basic_ack(delivery_tag=method.delivery_tag)
         except Exception as e:
             app.logger.error(f"Error processing message: {e}")
+            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
 
     def process_stock(self, stock_data):
         from app import app
@@ -92,21 +93,13 @@ class StockConsumer:
         items = stock_data.get("items")
 
         try:
-            # Lua script to check stock and update it atomically
             process_stock_lua = """
                 local items = cmsgpack.unpack(ARGV[1])
-                local user_key = KEYS[1]
-                local ttl = tonumber(ARGV[2])
-
-                -- Table to store errors and rollback information
                 local errors = {}
                 local rollback_data = {}
 
-                -- Iterate over items and check stock levels
                 for item_id, quantity in pairs(items) do
-                    local item_key = item_id
-                    local item_data = redis.call("GET", item_key)
-
+                    local item_data = redis.call("GET", item_id)
                     if not item_data then
                         errors[item_id] = "item_not_found"
                     else
@@ -114,67 +107,46 @@ class StockConsumer:
                         if item.stock < quantity then
                             errors[item_id] = "insufficient_stock"
                         else
-                            -- Store item data for rollback purposes (before deduction)
                             rollback_data[item_id] = item.stock
-
-                            -- Reduce stock
                             item.stock = item.stock - quantity
-                            redis.call("SET", item_key, cmsgpack.pack(item))
+                            redis.call("SET", item_id, cmsgpack.pack(item))
                         end
                     end
                 end
 
-                -- If there are any errors, rollback any stock deductions and return the error table
                 if next(errors) then
-                    -- Rollback all the previous stock reductions
                     for item_id, prev_stock in pairs(rollback_data) do
-                        local item_key = item_id
-                        local item_data = redis.call("GET", item_key)
+                        local item_data = redis.call("GET", item_id)
                         local item = cmsgpack.unpack(item_data)
-                        item.stock = prev_stock  -- Restore the previous stock value
-                        redis.call("SET", item_key, cmsgpack.pack(item))
+                        item.stock = prev_stock
+                        redis.call("SET", item_id, cmsgpack.pack(item))
                     end
                     return cmsgpack.pack(errors)
                 end
 
-                -- If no errors, return nil (successful operation)
                 return nil
             """
 
-            # Execute the Lua script
             result = self.redis_client.eval(
                 process_stock_lua,
-                len(items),  # Number of KEYS (one for each item)
-                *[str(item_id) for item_id in items],  # KEYS, one for each item
-                msgpack.encode(items),  # ARGV[1] - item stock quantities
-                86400,  # ARGV[2] - TTL for rollback (1 day)
+                len(items),
+                *[str(item_id) for item_id in items],
+                msgpack.encode(items),
             )
 
-            # Handle the result of the Lua script
             if result:
-                errors = msgpack.unpack(result)
-                if len(errors) > 0:
-                    app.logger.debug(
-                        "One or more items have insufficient stock or were not found."
-                    )
+                errors = msgpack.decode(result)
+                if errors:
+                    app.logger.debug("Stock check failed: " + str(errors))
                     self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
                     return
 
-            app.logger.debug(
-                f"Stock successfully reduced for items in order {order_id}."
-            )
-
-            # Send success event to RabbitMQ
+            app.logger.debug(f"Stock reduced for order {order_id}")
             self.send_stock_processed_event(order_id, user_id, "SUCCESS", items)
-            return
 
         except Exception as e:
             app.logger.error(f"Error processing stock for order {order_id}: {e}")
-
-            # Send failure event to RabbitMQ
             self.send_stock_processed_event(order_id, user_id, "FAILURE", items)
-
-            return
 
     def send_stock_processed_event(self, order_id, user_id, status, items):
         event_data = {
@@ -233,16 +205,14 @@ class StockConsumer:
             # Execute the Lua script
             result = self.redis_client.eval(
                 rollback_stock_lua,
-                len(items),  # Number of KEYS (one for each item)
-                *[str(item_id) for item_id in items],  # KEYS, one for each item
-                msgpack.encode(
-                    items
-                ),  # ARGV[1] - item stock quantities (rollback amounts)
+                len(items),
+                *[str(item_id) for item_id in items],
+                msgpack.encode(items),
             )
 
             # Handle the result of the Lua script
             if result:
-                errors = msgpack.unpack(result)
+                errors = msgpack.decode(result)
                 if len(errors) > 0:
                     app.logger.debug("Error rolling back some items.")
                     for item_id, error in errors.items():

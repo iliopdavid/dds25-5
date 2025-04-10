@@ -2,7 +2,6 @@ import base64
 import logging
 import os
 import atexit
-import threading
 import uuid
 
 import redis
@@ -10,7 +9,6 @@ import requests
 
 from msgspec import msgpack, Struct
 from flask import Flask, jsonify, abort, Response
-from consumer import PaymentConsumer
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
@@ -46,18 +44,6 @@ def on_start():
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
             return abort(400, DB_ERROR_STR)
-
-
-def start_consumer():
-    consumer = PaymentConsumer(db)
-    app.logger.debug("Consumer started!")
-    consumer.consume_messages()
-
-
-def start_consumer_thread():
-    consumer_thread = threading.Thread(target=start_consumer)
-    consumer_thread.daemon = True
-    consumer_thread.start()
 
 
 def close_db_connection():
@@ -178,10 +164,8 @@ def remove_credit(user_id: str, amount: int):
 
 
 if __name__ == "__main__":
-    start_consumer_thread()
     app.run(host="0.0.0.0", port=8000, debug=True)
 else:
     gunicorn_logger = logging.getLogger("gunicorn.error")
     app.logger.handlers = gunicorn_logger.handlers
     app.logger.setLevel(gunicorn_logger.level)
-    start_consumer_thread()

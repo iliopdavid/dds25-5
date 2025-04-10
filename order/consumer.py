@@ -3,6 +3,8 @@ from producer import OrderProducer
 import json
 import pika
 from msgspec import msgpack
+import uuid
+import time
 
 
 class OrderConsumer:
@@ -71,7 +73,7 @@ class OrderConsumer:
 
         for queue in self.queue_names:
             self.channel.basic_consume(
-                queue=queue, on_message_callback=self.handle_message
+                queue=queue, on_message_callback=self.handle_message, auto_ack=False
             )
 
         app.logger.info("Waiting for messages. To exit press CTRL+C")
@@ -151,6 +153,10 @@ class OrderConsumer:
     def update_order_status(self, order_id, field, status):
         from app import app
 
+        lock_id = self.acquire_lock(order_id)
+        if not lock_id:
+            return {"status": "failure", "message": "Could not acquire lock"}
+
         try:
             # Lua script to update the order's status atomically
             update_order_lua = """
@@ -198,6 +204,34 @@ class OrderConsumer:
         except Exception as e:
             app.logger.exception(f"Error updating order {order_id} status: {str(e)}")
             return {"status": "failure", "message": f"Error updating order: {str(e)}"}
+
+        finally:
+            self.release_lock(order_id, lock_id)
+
+    def acquire_lock(self, lock_key, acquire_timeout=10, lock_timeout=10):
+        identifier = str(uuid.uuid4())
+        lock_key = f"lock:{lock_key}"
+        end = time.time() + acquire_timeout
+
+        while time.time() < end:
+            if self.redis_client.set(lock_key, identifier, ex=lock_timeout, nx=True):
+                return identifier
+            time.sleep(0.01)
+        return None
+
+    def release_lock(self, lock_key, identifier):
+        lock_key = f"lock:{lock_key}"
+        unlock_script = """
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+            return redis.call("DEL", KEYS[1])
+        else
+            return 0
+        end
+        """
+        try:
+            self.redis_client.eval(unlock_script, 1, lock_key, identifier)
+        except Exception as e:
+            print(f"Error releasing lock: {e}")
 
     def initiate_rollback(self, order_id, event):
         from app import app, OrderValue
@@ -283,6 +317,7 @@ class OrderConsumer:
                 -- Update order statuses
                 order.stock_status = "COMPLETED"
                 order.payment_status = "COMPLETED"
+                order.paid = true
 
                 -- Save the updated order back to Redis
                 redis.call("SET", order_id, cmsgpack.pack(order))
