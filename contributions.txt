@@ -1,0 +1,1 @@
+David: Built the saga workflow using synchronous choreography, handled compensation logic for checkout failures, and added Redis transaction safety with pipelines and - with help from Stan - optimistic locking (Fortunately no cookies from me beacuse I'm so bad at cooking).

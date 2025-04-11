@@ -1,53 +1,25 @@
-# Web-scale Data Management Project Template
+# Team 5 Distributed Data Assignment 2025
 
-Basic project structure with Python's Flask and Redis. 
-**You are free to use any web framework in any language and any database you like for this project.**
+### Saga Workflow and Choreography Logic
 
-### Project structure
+Our project implements a **distributed checkout process** using the **Saga pattern with a synchronous choreography approach**.
 
-* `env`
-    Folder containing the Redis env variables for the docker-compose deployment
-    
-* `helm-config` 
-   Helm chart values for Redis and ingress-nginx
-        
-* `k8s`
-    Folder containing the kubernetes deployments, apps and services for the ingress, order, payment and stock services.
-    
-* `order`
-    Folder containing the order application logic and dockerfile. 
-    
-* `payment`
-    Folder containing the payment application logic and dockerfile. 
+#### Key Components
+- Implemented the entire **saga flow** in `order-service`, which:
+  - Initiates stock subtraction (`stock-service`)
+  - Initiates payment deduction (`payment-service`)
+  - Finalizes the order upon success
+  - Performs **compensation** in case of failure (refund payment or restore stock)
+- Followed a **choreography-based pattern**: services coordinate through direct HTTP requests rather than a central orchestrator.
+- Workflow is **synchronous and request-driven** — not event-based — to keep flow deterministic.
+- Leveraged **Redis pipelines and optimistic locking** (`WATCH` / `MULTI` / `EXEC`) in `stock-service` and `payment-service` to:
+  - Prevent race conditions in concurrent updates
+  - Ensure atomicity and consistency in high-concurrency scenarios
+  - Support safe retries when conflicts are detected
 
-* `stock`
-    Folder containing the stock application logic and dockerfile. 
+### Highlights
 
-* `test`
-    Folder containing some basic correctness tests for the entire system. (Feel free to enhance them)
-
-### Deployment types:
-
-#### docker-compose (local development)
-
-After coding the REST endpoint logic run `docker-compose up --build` in the base folder to test if your logic is correct
-(you can use the provided tests in the `\test` folder and change them as you wish). 
-
-***Requirements:*** You need to have docker and docker-compose installed on your machine. 
-
-K8s is also possible, but we do not require it as part of your submission. 
-
-#### minikube (local k8s cluster)
-
-This setup is for local k8s testing to see if your k8s config works before deploying to the cloud. 
-First deploy your database using helm by running the `deploy-charts-minicube.sh` file (in this example the DB is Redis 
-but you can find any database you want in https://artifacthub.io/ and adapt the script). Then adapt the k8s configuration files in the
-`\k8s` folder to mach your system and then run `kubectl apply -f .` in the k8s folder. 
-
-***Requirements:*** You need to have minikube (with ingress enabled) and helm installed on your machine.
-
-#### kubernetes cluster (managed k8s cluster in the cloud)
-
-Similarly to the `minikube` deployment but run the `deploy-charts-cluster.sh` in the helm step to also install an ingress to the cluster. 
-
-***Requirements:*** You need to have access to kubectl of a k8s cluster.
+- **Choreography-based Saga**: There is no standalone orchestrator service. Instead, the `order-service` **initiates** and **coordinates** the checkout workflow as part of its domain logic.
+- While the `order-service` drives the saga flow, it is still a **participant** in the system — not a central controller — so the design follows a **choreographed** rather than orchestrated pattern.
+- **Synchronous choreography** simplifies tracing and debugging.
+- **Optimistic concurrency control** with Redis ensures correctness without locks.
