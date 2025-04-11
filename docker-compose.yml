@@ -29,6 +29,7 @@ services:
         condition: service_started
       rabbitmq:
         condition: service_healthy
+        
 
   order-db:
     build:

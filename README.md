@@ -3,6 +3,11 @@
 Basic project structure with Python's Flask and Redis. 
 **You are free to use any web framework in any language and any database you like for this project.**
 
+## Event Driven Approach
+This project was rewritting with Quart, an asynchronous Python web framework that is similar to Flask but powered by asyncio. It allows for non-blocking operations, making the application more efficient and scalable. 
+
+To keep the services decoupled, this system leverages RabbitMQ as a message broker. Events are published and consumed asynchronously, ensuring high performance and responsiveness even under load. Asynchronous RabbitMQ with `aio-pika` was used for this.
+
 ### Project structure
 
 * `env`

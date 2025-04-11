@@ -157,24 +157,24 @@ class PaymentConsumer:
 
         try:
             deduct_credit_lua = """
-                local user_id = KEYS[1]
-                local total_cost = tonumber(ARGV[1])
-                local user_data = redis.call("GET", user_id)
-                if not user_data then
-                    return -1
+                local user_key = KEYS[1]
+                local amount = tonumber(ARGV[1])
+                
+                local encoded = redis.call("GET", user_key)
+                if not encoded then
+                    return redis.status_reply("user_not_found")
                 end
-
-                local user = cmsgpack.unpack(user_data)
-
-                if user.credit >= total_cost then
-                    user.credit = user.credit - total_cost
-
-                    local updated_user_data = cmsgpack.pack(user)
-                    redis.call("SET", user_id, updated_user_data)
-                    return 0
-                else
-                    return -2
+                
+                local msgpack = cmsgpack.unpack(encoded)
+                if msgpack.credit < amount then
+                    return redis.status_reply("insufficient_credit")
                 end
+                
+                -- Update credit
+                msgpack.credit = msgpack.credit - amount
+                redis.call("SET", user_key, cmsgpack.pack(msgpack))
+                
+                return redis.status_reply("success")
             """
 
             result = await self.redis_client.eval(
@@ -184,7 +184,11 @@ class PaymentConsumer:
                 amount,
             )
 
-            if result == 0:
+            # Convert bytes to string if needed
+            if isinstance(result, bytes):
+                result = result.decode("utf-8")
+
+            if result == "success":
                 app.logger.debug(f"Credit for user {user_id} reduced by {amount}.")
 
                 # ADDED
@@ -230,27 +234,34 @@ class PaymentConsumer:
 
         try:
             rollback_credit_lua = """
-                local user_id = KEYS[1]
-                local total_cost = tonumber(ARGV[1])
-                local user_data = redis.call("GET", user_id)
-
+                local user_key = KEYS[1]
+                local amount = tonumber(ARGV[1])
+                
+                local user_data = redis.call("GET", user_key)
+                if not user_data then
+                    return redis.status_reply("user_not_found")
+                end
+                
                 local user = cmsgpack.unpack(user_data)
-
-                local new_credit = user.credit + total_cost
-                user.credit = new_credit
-
-                local updated_user_data = cmsgpack.pack(user)
-
-                redis.call("SET", user_id, updated_user_data)
-
-                return 0
+                
+                -- Rollback the user's credit by adding the specified amount
+                user.credit = user.credit + amount
+                
+                -- Update the user data in Redis
+                redis.call("SET", user_key, cmsgpack.pack(user))
+                
+                return redis.status_reply("success")
             """
 
             result = await self.redis_client.eval(
                 rollback_credit_lua, 1, str(user_id), amount
             )
 
-            if result == 0:
+            # Convert bytes to string if needed
+            if isinstance(result, bytes):
+                result = result.decode("utf-8")
+
+            if result == "success":
                 app.logger.info(
                     f"Credit rollback successful for user {user_id}, order {order_id}. Amount: {amount}"
                 )
