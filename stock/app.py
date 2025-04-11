@@ -176,7 +176,7 @@ async def find_item(item_id: str):
 @app.post('/add/<item_id>/<int:amount>')
 def add_stock(item_id: str, amount: int):
     try:
-        with db.pipeline() as pipe:
+        async with db.pipeline() as pipe:
             # Repeat until successful.
             while True:
                 try:
@@ -185,7 +185,7 @@ def add_stock(item_id: str, amount: int):
 
                     # The pipeline executes commands directly (instead of buffering them) from immediately after the
                     # `watch()` call until we begin the transaction.
-                    item_bytes = pipe.get(item_id)
+                    item_bytes = await pipe.get(item_id)
                     if not item_bytes:
                         pipe.unwatch()
                         abort(400, f"Item: {item_id} not found!")
@@ -198,7 +198,7 @@ def add_stock(item_id: str, amount: int):
                     # Start the transaction, which will enable buffering again for the remaining commands.
                     pipe.multi()
                     pipe.set(item_id, encoded_item)
-                    pipe.execute()
+                    await pipe.execute()
 
                     log({item_id: encoded_item})
 
