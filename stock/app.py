@@ -174,7 +174,7 @@ async def find_item(item_id: str):
 
 
 @app.post('/add/<item_id>/<int:amount>')
-def add_stock(item_id: str, amount: int):
+async def add_stock(item_id: str, amount: int):
     try:
         async with db.pipeline() as pipe:
             # Repeat until successful.
