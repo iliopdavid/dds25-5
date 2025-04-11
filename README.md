@@ -65,11 +65,10 @@ To ensure **fault tolerance** and **state recoverability**, each service impleme
 
 ---
 
-## Event-Driven Approach (Alternative - Not the Main Project)
+## Event-Driven Approach (Alternative Option)
 
 > ⚠️ **Important:**  
 > This version was a **parallel implementation** located in the `rabbitmq-final` branch.  
-> It is **not the main submission** due to unresolved fault-tolerance issues, but we include it here to document our efforts.
 
 We explored an **asynchronous, event-driven saga** using a fully decoupled message-passing model:
 
