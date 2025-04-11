@@ -151,7 +151,7 @@ async def trigger_log_recovery():
                 pass
             return jsonify({"msg": "Log file created successfully"})
         except FileExistsError:
-            return abort(400, DB_ERROR_STR)
+            app.logger.warning(f"Log file already created by another worker.")
 
 
 @app.post("/create/<user_id>")
