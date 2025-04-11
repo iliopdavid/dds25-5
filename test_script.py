@@ -37,6 +37,41 @@ async def get_order_details(order_id):
                 return None
 
 
+async def create_user():
+    """Create a new user in the payment service"""
+    url = f"{GATEWAY_URL}/payment/create_user"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(url) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    user_id = result.get("user_id")
+                    print(f"Created user with ID: {user_id}")
+                    return user_id
+                else:
+                    error_text = await response.text()
+                    print(
+                        f"Failed to create user: Status {response.status}, Error: {error_text}"
+                    )
+                    return None
+        except Exception as e:
+            print(f"Error creating user: {e}")
+            return None
+
+
+async def create_multiple_users(count):
+    """Create multiple users"""
+    print(f"Creating {count} users...")
+    user_ids = []
+    for i in range(count):
+        user_id = await create_user()
+        if user_id:
+            user_ids.append(user_id)
+
+    print(f"Created {len(user_ids)} users successfully")
+    return user_ids
+
+
 async def create_stock_item(price=15):
     """Create a new item in the stock service"""
     url = f"{GATEWAY_URL}/stock/item/create/{price}"
@@ -61,6 +96,10 @@ async def create_stock_item(price=15):
 
 
 async def main():
+    # Create users
+    print("Creating users...")
+    await create_multiple_users(5)
+
     # Create some items
     print("Creating stock items...")
     item_ids = []

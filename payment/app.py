@@ -81,8 +81,27 @@ def log(kv_pairs: dict):
             log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
+async def wait_for_redis(max_attempts=30, delay=1):
+    for attempt in range(max_attempts):
+        try:
+            await db.ping()
+            app.logger.info("Redis connection established")
+            return True
+        except (redis.exceptions.ConnectionError, redis.exceptions.RedisError) as e:
+            app.logger.warning(
+                f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
+            )
+            await asyncio.sleep(delay)
+
+    app.logger.error(f"Redis connection failed after {max_attempts} attempts")
+    return False
+
+
 @app.before_serving
 async def startup():
+    if not await wait_for_redis():
+        app.logger.error("Cannot start application without Redis")
+
     """App startup logic."""
     if os.path.exists(LOG_PATH):
         await recover_from_logs()
@@ -103,8 +122,20 @@ async def startup():
     app.logger.info("producer and consumer initialized successfully.")
 
 
+async def close_db_connection():
+    await db.close()
+
+
+@app.after_serving
+async def shutdown():
+    await close_db_connection()
+
+
 @app.post("/internal/recover-from-logs")
 async def on_start():
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed during log recovery request.")
+        return jsonify({"error": "Failed to connect to database"}), 500
     if os.path.exists(LOG_PATH):
         await recover_from_logs()
         return jsonify({"msg": "Recovered from logs successfully"})

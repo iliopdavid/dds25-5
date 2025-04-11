@@ -47,6 +47,9 @@ class OrderValue(Struct):
 
 @app.before_serving
 async def startup():
+    if not await wait_for_redis():
+        app.logger.error("Cannot start application without Redis")
+
     try:
         app.logger.debug("Startup initiated")
 
@@ -75,6 +78,31 @@ async def startup():
     except Exception as e:
         app.logger.exception(f"Startup failed: {e}")
         raise
+
+
+async def wait_for_redis(max_attempts=30, delay=1):
+    for attempt in range(max_attempts):
+        try:
+            await db.ping()
+            app.logger.info("Redis connection established")
+            return True
+        except (redis.exceptions.ConnectionError, redis.exceptions.RedisError) as e:
+            app.logger.warning(
+                f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
+            )
+            await asyncio.sleep(delay)
+
+    app.logger.error(f"Redis connection failed after {max_attempts} attempts")
+    return False
+
+
+async def close_db_connection():
+    await db.close()
+
+
+@app.after_serving
+async def shutdown():
+    await close_db_connection()
 
 
 async def recover_from_logs():
@@ -141,6 +169,9 @@ async def handle_rollback_complete(order_id):
 
 @app.post("/internal/recover-from-logs")
 async def trigger_log_recovery():
+    if not await wait_for_redis():
+        app.logger.error("Cannot start application without Redis")
+
     if os.path.exists(LOG_PATH):
         await recover_from_logs()
         return jsonify({"msg": "Recovered from logs successfully"})
