@@ -96,13 +96,9 @@ async def wait_for_redis(max_attempts=30, delay=1):
     return False
 
 
-async def close_db_connection():
-    await db.close()
-
-
 @app.after_serving
 async def shutdown():
-    await close_db_connection()
+    await db.close()
 
 
 async def recover_from_logs():

@@ -50,13 +50,6 @@ async def count_lines_in_log():
     return line_count
 
 
-def close_db_connection():
-    db.close()
-
-
-atexit.register(close_db_connection)
-
-
 class UserValue(Struct):
     credit: int
 
@@ -122,13 +115,9 @@ async def startup():
     app.logger.info("producer and consumer initialized successfully.")
 
 
-async def close_db_connection():
-    await db.close()
-
-
 @app.after_serving
 async def shutdown():
-    await close_db_connection()
+    await db.close()
 
 
 @app.post("/internal/recover-from-logs")

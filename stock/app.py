@@ -37,14 +37,6 @@ db = redis.asyncio.Redis(
 producer = StockProducer()
 
 
-def close_db_connection():
-    """Close Redis connection when app shuts down."""
-    db.close()
-
-
-atexit.register(close_db_connection)
-
-
 class StockValue(Struct):
     stock: int
     price: int
@@ -109,13 +101,9 @@ async def startup():
     app.logger.info("Producer and Consumer initialized successfully.")
 
 
-async def close_db_connection():
-    await db.close()
-
-
 @app.after_serving
 async def shutdown():
-    await close_db_connection()
+    await db.close()
 
 
 @app.post("/internal/recover-from-logs")
