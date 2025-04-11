@@ -81,7 +81,7 @@ async def startup():
                 pass
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
-            return abort(400, DB_ERROR_STR)
+            app.logger.error("FileExistsError: Log file already exists unexpectedly")
 
     await producer.init()
 
@@ -103,7 +103,7 @@ async def on_start():
             app.logger.debug(f"Log file created at: {LOG_PATH}")
             return jsonify({"msg": "Log file created successfully"})
         except FileExistsError:
-            return abort(400, DB_ERROR_STR)
+            app.logger.warning(f"Log file already created by another worker.")
 
 
 @app.post("/item/create/<int:price>")

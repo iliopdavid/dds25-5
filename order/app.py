@@ -63,7 +63,6 @@ async def startup():
                 app.logger.error(
                     "FileExistsError: Log file already exists unexpectedly"
                 )
-                abort(400, DB_ERROR_STR)
 
         app.logger.debug("Initializing producer")
         await producer.init()
