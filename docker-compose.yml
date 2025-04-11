@@ -21,7 +21,7 @@ services:
       - PAYMENT_URL=http://payment-service:5000
     volumes:
       - ./logging:/home/flask-app/logging
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=debug -k uvicorn.workers.UvicornWorker -c gunicorn_config.py app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info -k uvicorn.workers.UvicornWorker -c gunicorn_config.py app:app
     env_file:
       - env/order_redis.env
     depends_on:
@@ -43,7 +43,7 @@ services:
     image: stock:latest
     volumes:
       - ./logging:/home/flask-app/logging
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=debug -k uvicorn.workers.UvicornWorker -c gunicorn_config.py app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info -k uvicorn.workers.UvicornWorker -c gunicorn_config.py app:app
     env_file:
       - env/stock_redis.env
     depends_on:
@@ -64,7 +64,7 @@ services:
     image: user:latest
     volumes:
       - ./logging:/home/flask-app/logging
-    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=debug -k uvicorn.workers.UvicornWorker -c gunicorn_config.py app:app
+    command: gunicorn -b 0.0.0.0:5000 -w 2 --timeout 30 --log-level=info -k uvicorn.workers.UvicornWorker -c gunicorn_config.py app:app
     env_file:
       - env/payment_redis.env
     depends_on:
