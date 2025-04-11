@@ -4,7 +4,7 @@ import logging
 import os
 import atexit
 import uuid
-import redis.asyncio as redis
+import redis
 from msgspec import msgpack, Struct
 from quart import Quart, jsonify, abort, Response
 from producer import StockProducer
@@ -27,7 +27,7 @@ async def recover_from_logs():
 
 app = Quart("stock-service")
 
-db: redis.Redis = redis.asyncio.Redis(
+db = redis.asyncio.Redis(
     host=os.environ["REDIS_HOST"],
     port=int(os.environ["REDIS_PORT"]),
     password=os.environ["REDIS_PASSWORD"],

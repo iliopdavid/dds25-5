@@ -5,7 +5,7 @@ import atexit
 import uuid
 import asyncio
 
-import redis.asyncio as redis
+import redis
 
 from msgspec import msgpack, Struct
 from quart import Quart, jsonify, abort, Response
