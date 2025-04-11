@@ -50,6 +50,22 @@ class StockValue(Struct):
     price: int
 
 
+async def wait_for_redis(max_attempts=30, delay=1):
+    for attempt in range(max_attempts):
+        try:
+            await db.ping()
+            app.logger.info("Redis connection established")
+            return True
+        except (redis.exceptions.ConnectionError, redis.exceptions.RedisError) as e:
+            app.logger.warning(
+                f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
+            )
+            await asyncio.sleep(delay)
+
+    app.logger.error(f"Redis connection failed after {max_attempts} attempts")
+    return False
+
+
 async def get_item_from_db(item_id: str) -> StockValue:
     """Retrieve an item from the Redis database."""
     try:
@@ -72,6 +88,9 @@ def log(kv_pairs: dict):
 
 @app.before_serving
 async def startup():
+    if not await wait_for_redis():
+        app.logger.error("Cannot start application without Redis")
+
     """App startup logic."""
     if os.path.exists(LOG_PATH):
         await recover_from_logs()
@@ -90,8 +109,20 @@ async def startup():
     app.logger.info("Producer and Consumer initialized successfully.")
 
 
+async def close_db_connection():
+    await db.close()
+
+
+@app.after_serving
+async def shutdown():
+    await close_db_connection()
+
+
 @app.post("/internal/recover-from-logs")
 async def on_start():
+    if not await wait_for_redis():
+        app.logger.error("Cannot start application without Redis")
+
     """Recover the logs if the file exists."""
     if os.path.exists(LOG_PATH):
         await recover_from_logs()
