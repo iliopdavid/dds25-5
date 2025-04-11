@@ -47,21 +47,35 @@ class OrderValue(Struct):
 
 @app.before_serving
 async def startup():
-    if os.path.exists(LOG_PATH):
-        await recover_from_logs()
-    else:
-        try:
-            with open(LOG_PATH, "x"):
-                pass
-            app.logger.debug(f"Log file created at: {LOG_PATH}")
-        except FileExistsError:
-            abort(400, DB_ERROR_STR)
+    try:
+        app.logger.debug("Startup initiated")
 
-    await producer.init()
+        if os.path.exists(LOG_PATH):
+            app.logger.debug("Log file exists. Starting recover_from_logs()")
+            await recover_from_logs()
+            app.logger.debug("recover_from_logs() completed")
+        else:
+            try:
+                with open(LOG_PATH, "x"):
+                    pass
+                app.logger.debug(f"Log file created at: {LOG_PATH}")
+            except FileExistsError:
+                app.logger.error(
+                    "FileExistsError: Log file already exists unexpectedly"
+                )
+                abort(400, DB_ERROR_STR)
 
-    asyncio.create_task(run_consumer(db))
+        app.logger.debug("Initializing producer")
+        await producer.init()
+        app.logger.debug("Producer initialized")
 
-    app.logger.info("Producer and Consumer initialized successfully.")
+        app.logger.debug("Creating background consumer task")
+        asyncio.create_task(run_consumer(db))
+
+        app.logger.info("Producer and Consumer initialized successfully.")
+    except Exception as e:
+        app.logger.exception(f"Startup failed: {e}")
+        raise
 
 
 async def recover_from_logs():
