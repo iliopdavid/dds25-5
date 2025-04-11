@@ -27,7 +27,7 @@ async def recover_from_logs():
 
 app = Quart("stock-service")
 
-db: redis.Redis = redis.Redis(
+db: redis.Redis = redis.asyncio.Redis(
     host=os.environ["REDIS_HOST"],
     port=int(os.environ["REDIS_PORT"]),
     password=os.environ["REDIS_PASSWORD"],
