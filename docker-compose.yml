@@ -74,8 +74,11 @@ services:
         condition: service_healthy
 
   payment-db:
-    image: redis:7.2-bookworm
-    command: redis-server --requirepass redis --maxmemory 512mb
+    build:
+      context: ./payment
+      dockerfile: Dockerfile.redis
+    volumes:
+      - ./env/payment_redis.env:/usr/local/bin/payment_redis.env:ro
 
   rabbitmq:
     image: "rabbitmq:3-management"

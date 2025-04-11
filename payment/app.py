@@ -32,10 +32,22 @@ db: redis.Redis = redis.Redis(
 
 
 async def recover_from_logs():
+    app.logger.debug(f"Recovering using {LOG_PATH}")
     with open(LOG_PATH, "r") as file:
         for line in file:
             info = line.split(", ")
             await db.set(info[0], base64.b64decode(info[1]))
+
+
+# For debugging
+async def count_lines_in_log():
+    app.logger.debug(f"Counting lines in {LOG_PATH}")
+    line_count = 0
+    with open(LOG_PATH, "r") as file:
+        for line in file:
+            line_count += 1
+    app.logger.debug(f"Total lines in log: {line_count}")
+    return line_count
 
 
 def close_db_connection():
@@ -81,6 +93,8 @@ async def startup():
             app.logger.debug(f"Log file created at: {LOG_PATH}")
         except FileExistsError:
             return abort(400, DB_ERROR_STR)
+
+    await count_lines_in_log()
 
     await producer.init()
 
