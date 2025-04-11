@@ -24,9 +24,7 @@ This repository contains our primary implementation of a distributed checkout sy
 
 ### Highlights
 
-- **Choreography-based Saga**:  
-  No standalone orchestrator. Instead, `order-service` drives the workflow, coordinating the saga while also being a domain-bound participant.  
-  This maintains a **choreographed design** rather than an orchestrated one.
+- **Choreography-based Saga**: No standalone orchestrator. Instead, `order-service` drives the workflow, coordinating the saga while also being a domain-bound participant.  This maintains a **choreographed design** rather than an orchestrated one.
 
 - **Synchronous choreography** simplifies **tracing**, **error handling**, and **debugging**.
 
