@@ -3,11 +3,14 @@ import logging
 import os
 import atexit
 import uuid
+import asyncio
 
-import redis
+import redis.asyncio as redis
 
 from msgspec import msgpack, Struct
-from flask import Flask, jsonify, abort, Response
+from quart import Quart, jsonify, abort, Response
+from producer import PaymentProducer
+from consumer import run_payment_consumer
 
 DB_ERROR_STR = "DB error"
 REQ_ERROR_STR = "Requests error"
@@ -16,7 +19,9 @@ LOG_DIR = "logging"
 LOG_FILENAME = "payment_log.txt"
 LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
-app = Flask("payment-service")
+app = Quart("payment-service")
+
+producer = PaymentProducer()
 
 db: redis.Redis = redis.Redis(
     host=os.environ["REDIS_HOST"],
@@ -26,11 +31,11 @@ db: redis.Redis = redis.Redis(
 )
 
 
-def recover_from_logs():
+async def recover_from_logs():
     with open(LOG_PATH, "r") as file:
         for line in file:
             info = line.split(", ")
-            db.set(info[0], base64.b64decode(info[1]))
+            await db.set(info[0], base64.b64decode(info[1]))
 
 
 def close_db_connection():
@@ -44,16 +49,16 @@ class UserValue(Struct):
     credit: int
 
 
-def get_user_from_db(user_id: str) -> UserValue | None:
+async def get_user_from_db(user_id: str) -> UserValue | None:
     try:
-        # get serialized data
-        entry: bytes = db.get(user_id)
+        # Get serialized data
+        entry: bytes = await db.get(user_id)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
-    # deserialize data if it exists else return null
+    # Deserialize data if it exists else return null
     entry: UserValue | None = msgpack.decode(entry, type=UserValue) if entry else None
     if entry is None:
-        # if user does not exist in the database; abort
+        # If user does not exist in the database; abort
         abort(400, f"User: {user_id} not found!")
     return entry
 
@@ -64,10 +69,30 @@ def log(kv_pairs: dict):
             log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
-@app.post("/internal/recover-from-logs")
-def on_start():
+@app.before_serving
+async def startup():
+    """App startup logic."""
     if os.path.exists(LOG_PATH):
-        recover_from_logs()
+        await recover_from_logs()
+    else:
+        try:
+            with open(LOG_PATH, "x"):
+                pass
+            app.logger.debug(f"Log file created at: {LOG_PATH}")
+        except FileExistsError:
+            return abort(400, DB_ERROR_STR)
+
+    await producer.init()
+
+    asyncio.create_task(run_payment_consumer(db))
+
+    app.logger.info("producer and consumer initialized successfully.")
+
+
+@app.post("/internal/recover-from-logs")
+async def on_start():
+    if os.path.exists(LOG_PATH):
+        await recover_from_logs()
         return jsonify({"msg": "Recovered from logs successfully"})
     else:
         try:
@@ -80,45 +105,44 @@ def on_start():
 
 
 @app.post("/create_user")
-def create_user():
+async def create_user():
     key = str(uuid.uuid4())
     value = msgpack.encode(UserValue(credit=0))
     try:
         log({key: value})
-        db.set(key, value)
+        await db.set(key, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return jsonify({"user_id": key})
 
 
 @app.post("/batch_init/<int:n>/<int:starting_money>")
-def batch_init_users(n: int, starting_money: int):
+async def batch_init_users(n: int, starting_money: int):
     kv_pairs: dict[str, bytes] = {
         f"{i}": msgpack.encode(UserValue(credit=starting_money)) for i in range(n)
     }
     try:
         log(kv_pairs)
-        db.mset(kv_pairs)
+        await db.mset(kv_pairs)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return jsonify({"msg": "Batch init for users successful"})
 
 
 @app.get("/find_user/<user_id>")
-def find_user(user_id: str):
-    user_entry: UserValue = get_user_from_db(user_id)
+async def find_user(user_id: str):
+    user_entry: UserValue = await get_user_from_db(user_id)
     return jsonify({"user_id": user_id, "credit": user_entry.credit})
 
 
 @app.post("/add_funds/<user_id>/<int:amount>")
-def add_credit(user_id: str, amount: int):
-    user_entry: UserValue = get_user_from_db(user_id)
-    # update credit, serialize and update database
+async def add_credit(user_id: str, amount: int):
+    user_entry: UserValue = await get_user_from_db(user_id)
     user_entry.credit += amount
     value = msgpack.encode(user_entry)
     try:
         log({user_id: value})
-        db.set(user_id, value)
+        await db.set(user_id, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return Response(
@@ -127,7 +151,7 @@ def add_credit(user_id: str, amount: int):
 
 
 @app.post("/pay/<user_id>/<int:amount>")
-def pay(user_id: str, amount: int):
+async def pay(user_id: str, amount: int):
     """
     Based on:
         Pipelines and transactions. (n.d.). Redis Docs. https://redis.io/docs/latest/develop/clients/redis-py/transpipe/
@@ -137,7 +161,7 @@ def pay(user_id: str, amount: int):
     :return:
     """
     try:
-        with db.pipeline() as pipe:
+        async with db.pipeline() as pipe:
             # Repeat until successful.
             while True:
                 try:
@@ -146,7 +170,7 @@ def pay(user_id: str, amount: int):
 
                     # The pipeline executes commands directly (instead of buffering them) from immediately after the
                     # `watch()` call until we begin the transaction.
-                    user_bytes = pipe.get(user_id)
+                    user_bytes = await pipe.get(user_id)
                     if not user_bytes:
                         pipe.unwatch()
                         abort(400, f"User {user_id} not found!")
@@ -164,7 +188,7 @@ def pay(user_id: str, amount: int):
                     # Start the transaction, which will enable buffering again for the remaining commands.
                     pipe.multi()
                     pipe.set(user_id, encoded_user)
-                    pipe.execute()
+                    await pipe.execute()
 
                     log({user_id: encoded_user})
 

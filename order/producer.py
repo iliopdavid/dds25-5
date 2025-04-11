@@ -1,53 +1,43 @@
 import json
 import uuid
-import pika
+import aio_pika
+from quart import current_app
 
 
 class OrderProducer:
     def __init__(self):
         self.connection = None
         self.channel = None
-        self._connect()
 
-        self.channel.exchange_declare(
-            exchange="order.exchange", exchange_type="topic", durable=True
-        )
-
-    def _connect(self):
+    async def init(self):
         from app import app
 
         try:
-            self.connection = pika.BlockingConnection(
-                pika.ConnectionParameters("rabbitmq")
+            self.connection = await aio_pika.connect_robust(
+                "amqp://guest:guest@rabbitmq/"
             )
-            self.channel = self.connection.channel()
-            self.channel.exchange_declare(
-                exchange="order.exchange", exchange_type="topic", durable=True
+            self.channel = await self.connection.channel()
+            self.exchange = await self.channel.declare_exchange(
+                "order.exchange", aio_pika.ExchangeType.TOPIC, durable=True
             )
+            app.logger.info("Successfully connected to RabbitMQ")
         except Exception as e:
             app.logger.error(f"Failed to connect to RabbitMQ: {e}")
-            self.connection = None
-            self.channel = None
 
-    def _ensure_connection(self):
+    async def send_event(self, routing_key, message):
         from app import app
 
         if not self.connection or self.connection.is_closed:
             app.logger.warning("RabbitMQ connection lost. Reconnecting...")
-            self._connect()
-
-    def send_event(self, routing_key, message):
-        from app import app
-
-        self._ensure_connection()
+            await self.init()
 
         try:
             message_body = json.dumps(message)
 
-            self.channel.basic_publish(
-                exchange="order.exchange",
+            # Publish the message asynchronously
+            await self.exchange.publish(
+                aio_pika.Message(body=message_body.encode()),
                 routing_key=routing_key,
-                body=message_body,
             )
             app.logger.debug(
                 f"Message sent to exchange 'order.exchange' with key '{routing_key}': {message_body}"
@@ -59,8 +49,7 @@ class OrderProducer:
             app.logger.exception(error_context)
             raise
 
-    # Notify that the order checkout has been placed.
-    def send_checkout_called(self, order_id, user_id, total_amount, items):
+    async def send_checkout_called(self, order_id, user_id, total_amount, items):
         message = {
             "message_id": str(uuid.uuid4()),
             "order_id": order_id,
@@ -68,8 +57,9 @@ class OrderProducer:
             "total_amount": total_amount,
             "items": items,
         }
-        self.send_event("order.payment.checkout", message)
+        await self.send_event("order.payment.checkout", message)
 
-    def close(self):
-        if self.connection and self.connection.is_open:
-            self.connection.close()
+    async def close(self):
+        if self.connection and not self.connection.is_closed:
+            await self.connection.close()
+            current_app.logger.info("RabbitMQ connection closed")

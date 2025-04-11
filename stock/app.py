@@ -1,12 +1,14 @@
+import asyncio
 import base64
 import logging
 import os
 import atexit
 import uuid
-import redis
-
+import redis.asyncio as redis
 from msgspec import msgpack, Struct
-from flask import Flask, jsonify, abort, Response
+from quart import Quart, jsonify, abort, Response
+from producer import StockProducer
+from consumer import run_stock_consumer
 
 DB_ERROR_STR = "DB error"
 
@@ -14,24 +16,16 @@ LOG_DIR = "logging"
 LOG_FILENAME = "stock_log.txt"
 LOG_PATH = os.path.join(LOG_DIR, LOG_FILENAME)
 
-app = Flask("stock-service")
 
-db: redis.Redis = redis.Redis(
-    host=os.environ["REDIS_HOST"],
-    port=int(os.environ["REDIS_PORT"]),
-    password=os.environ["REDIS_PASSWORD"],
-    db=int(os.environ["REDIS_DB"]),
-)
-
-
-def recover_from_logs():
+async def recover_from_logs():
+    """Recover stock data from the log file."""
     with open(LOG_PATH, "r") as file:
         for line in file:
-            info = line.split(", ")
-            db.set(info[0], base64.b64decode(info[1]))
+            info = line.strip().split(", ")
+            await db.set(info[0], base64.b64decode(info[1]))
 
 
-app = Flask("stock-service")
+app = Quart("stock-service")
 
 db: redis.Redis = redis.Redis(
     host=os.environ["REDIS_HOST"],
@@ -39,9 +33,12 @@ db: redis.Redis = redis.Redis(
     password=os.environ["REDIS_PASSWORD"],
     db=int(os.environ["REDIS_DB"]),
 )
+
+producer = StockProducer()
 
 
 def close_db_connection():
+    """Close Redis connection when app shuts down."""
     db.close()
 
 
@@ -53,11 +50,13 @@ class StockValue(Struct):
     price: int
 
 
-def get_item_from_db(item_id: str) -> StockValue | None:
+async def get_item_from_db(item_id: str) -> StockValue:
+    """Retrieve an item from the Redis database."""
     try:
-        entry: bytes = db.get(item_id)
+        entry: bytes = await db.get(item_id)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
+
     entry: StockValue | None = msgpack.decode(entry, type=StockValue) if entry else None
     if entry is None:
         abort(400, f"Item: {item_id} not found!")
@@ -65,15 +64,37 @@ def get_item_from_db(item_id: str) -> StockValue | None:
 
 
 def log(kv_pairs: dict):
+    """Log the key-value pairs into the log file."""
     with open(LOG_PATH, "a") as log_file:
         for k, v in kv_pairs.items():
             log_file.write(k + ", " + base64.b64encode(v).decode("utf-8") + "\n")
 
 
-@app.post("/internal/recover-from-logs")
-def on_start():
+@app.before_serving
+async def startup():
+    """App startup logic."""
     if os.path.exists(LOG_PATH):
-        recover_from_logs()
+        await recover_from_logs()
+    else:
+        try:
+            with open(LOG_PATH, "x"):
+                pass
+            app.logger.debug(f"Log file created at: {LOG_PATH}")
+        except FileExistsError:
+            return abort(400, DB_ERROR_STR)
+
+    await producer.init()
+
+    asyncio.create_task(run_stock_consumer(db))
+
+    app.logger.info("Producer and Consumer initialized successfully.")
+
+
+@app.post("/internal/recover-from-logs")
+async def on_start():
+    """Recover the logs if the file exists."""
+    if os.path.exists(LOG_PATH):
+        await recover_from_logs()
         return jsonify({"msg": "Recovered from logs successfully"})
     else:
         try:
@@ -86,64 +107,60 @@ def on_start():
 
 
 @app.post("/item/create/<int:price>")
-def create_item(price: int):
+async def create_item(price: int):
+    """Create a new stock item."""
     key = str(uuid.uuid4())
     app.logger.debug(f"Item: {key} created")
     value = msgpack.encode(StockValue(stock=0, price=price))
     try:
         log({key: value})
-        db.set(key, value)
+        await db.set(key, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return jsonify({"item_id": key})
 
 
 @app.post("/batch_init/<int:n>/<int:starting_stock>/<int:item_price>")
-def batch_init_users(n: int, starting_stock: int, item_price: int):
+async def batch_init_users(n: int, starting_stock: int, item_price: int):
+    """Initialize multiple stock items in batch."""
     kv_pairs: dict[str, bytes] = {
         f"{i}": msgpack.encode(StockValue(stock=starting_stock, price=item_price))
         for i in range(n)
     }
     try:
         log(kv_pairs)
-        db.mset(kv_pairs)
+        await db.mset(kv_pairs)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return jsonify({"msg": "Batch init for stock successful"})
 
 
 @app.get("/find/<item_id>")
-def find_item(item_id: str):
-    item_entry: StockValue = get_item_from_db(item_id)
+async def find_item(item_id: str):
+    """Find a specific item by its ID."""
+    item_entry: StockValue = await get_item_from_db(item_id)
     return jsonify({"stock": item_entry.stock, "price": item_entry.price})
 
 
 @app.post("/add/<item_id>/<int:amount>")
-def add_stock(item_id: str, amount: int):
-    item_entry: StockValue = get_item_from_db(item_id)
-    # update stock, serialize and update database
+async def add_stock(item_id: str, amount: int):
+    """Add stock to an item."""
+    item_entry: StockValue = await get_item_from_db(item_id)
     item_entry.stock += amount
     value = msgpack.encode(item_entry)
     try:
         log({item_id: value})
-        db.set(item_id, value)
+        await db.set(item_id, value)
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
 
 
 @app.post("/subtract/<item_id>/<int:amount>")
-def remove_stock(item_id: str, amount: int):
-    """
-    Based on:
-        Pipelines and transactions. (n.d.). Redis Docs. https://redis.io/docs/latest/develop/clients/redis-py/transpipe/
-
-    :param item_id:
-    :param amount:
-    :return:
-    """
+async def remove_stock(item_id: str, amount: int):
+    """Remove stock from an item with a transaction."""
     try:
-        with db.pipeline() as pipe:
+        async with db.pipeline() as pipe:
             # Repeat until successful.
             while True:
                 try:
@@ -152,7 +169,7 @@ def remove_stock(item_id: str, amount: int):
 
                     # The pipeline executes commands directly (instead of buffering them) from immediately after the
                     # `watch()` call until we begin the transaction.
-                    item_bytes = pipe.get(item_id)
+                    item_bytes = await pipe.get(item_id)
                     if not item_bytes:
                         pipe.unwatch()
                         abort(400, f"Item: {item_id} not found!")
@@ -169,7 +186,7 @@ def remove_stock(item_id: str, amount: int):
                     # Start the transaction, which will enable buffering again for the remaining commands.
                     pipe.multi()
                     pipe.set(item_id, encoded_item)
-                    pipe.execute()
+                    await pipe.execute()
 
                     log({item_id: encoded_item})
 
