@@ -89,6 +89,19 @@ async def get_order_from_db(order_id: str) -> OrderValue:
     return msgpack.decode(entry, type=OrderValue)
 
 
+async def wait_for_response(pubsub, channel_name, timeout=10.0):
+    start_time = asyncio.get_event_loop().time()
+
+    while True:
+        if (asyncio.get_event_loop().time() - start_time) > timeout:
+            raise asyncio.TimeoutError("Timeout waiting for message")
+
+        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.5)
+        if message and message["type"] == "message":
+            return message
+        await asyncio.sleep(0.1)
+
+
 async def handle_checkout_complete(order_id):
     channel_name = f"checkout-response:{order_id}"
     payload = {"status": "success"}
@@ -223,17 +236,12 @@ async def checkout(order_id: str):
         await pubsub.subscribe(channel_name)
         app.logger.debug(f"Subscribed to {channel_name} for order {order_id}")
 
-        # clear potential messages that are already written
-        await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.01)
-
         await producer.send_checkout_called(
             order_id, order_entry.user_id, order_entry.total_cost, order_entry.items
         )
         message = None
         try:
-            message = await pubsub.get_message(
-                ignore_subscribe_messages=True, timeout=10.0
-            )
+            message = await wait_for_response(pubsub, channel_name, timeout=10.0)
         except asyncio.TimeoutError:
             app.logger.warning(
                 f"Timeout waiting for response on {channel_name} for order {order_id}"
