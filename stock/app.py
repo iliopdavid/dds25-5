@@ -161,15 +161,40 @@ async def find_item(item_id: str):
     return jsonify({"stock": item_entry.stock, "price": item_entry.price})
 
 
-@app.post("/add/<item_id>/<int:amount>")
+@app.post('/add/<item_id>/<int:amount>')
 async def add_stock(item_id: str, amount: int):
-    """Add stock to an item."""
-    item_entry: StockValue = await get_item_from_db(item_id)
-    item_entry.stock += amount
-    value = msgpack.encode(item_entry)
     try:
-        log({item_id: value})
-        await db.set(item_id, value)
+        async with db.pipeline() as pipe:
+            # Repeat until successful.
+            while True:
+                try:
+                    # Watch the key we are about to change.
+                    pipe.watch(item_id)
+
+                    # The pipeline executes commands directly (instead of buffering them) from immediately after the
+                    # `watch()` call until we begin the transaction.
+                    item_bytes = await pipe.get(item_id)
+                    if not item_bytes:
+                        pipe.unwatch()
+                        abort(400, f"Item: {item_id} not found!")
+
+                    item_entry = msgpack.decode(item_bytes, type=StockValue)
+
+                    item_entry.stock += amount
+                    encoded_item = msgpack.encode(item_entry)
+
+                    # Start the transaction, which will enable buffering again for the remaining commands.
+                    pipe.multi()
+                    pipe.set(item_id, encoded_item)
+                    await pipe.execute()
+
+                    log({item_id: encoded_item})
+
+                    # The transaction succeeded, so break out of the loop.
+                    break
+                except redis.WatchError:
+                    # The transaction failed, so continue with the next attempt.
+                    continue
     except redis.exceptions.RedisError:
         return abort(400, DB_ERROR_STR)
     return Response(f"Item: {item_id} stock updated to: {item_entry.stock}", status=200)
