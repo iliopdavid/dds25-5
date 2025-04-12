@@ -1,4 +1,11 @@
 # Team 5 Distributed Data Assignment 2025  
+
+Please note that we have implemented two different approaches: one using the synchronous Saga pattern and the other following an asynchronous event-driven architecture.
+
+We would greatly appreciate it if you could review both implementations, as each provides fault tolerance while ensuring consistency.
+
+The event-driven approach is implemented in [rabbitmq-final branch](https://github.com/iliopdavid/dds25-5/tree/rabbitmq-final)
+
 ## Saga Workflow and Choreography Logic
 
 This repository contains our primary implementation of a distributed checkout system using the **Saga pattern** with **synchronous choreography**.
@@ -65,33 +72,3 @@ To ensure **fault tolerance** and **state recoverability**, each service impleme
 
 ---
 
-## Event-Driven Approach (Alternative Option)
-
-> ⚠️ **Important:**  
-> This version was a **parallel implementation** located in the `rabbitmq-final` branch.  
-
-We explored an **asynchronous, event-driven saga** using a fully decoupled message-passing model:
-
-### Technical Overview
-
-- Rewritten using **Quart**, an async web framework similar to Flask but built on `asyncio`
-- Uses **RabbitMQ** as the message broker
-- Events are published and consumed asynchronously using **`aio-pika`**
-
-This architecture aimed to provide:
-
-- **High concurrency and responsiveness**
-- **Loose coupling between services**
-- **Non-blocking message handling**
-
-### Why We Did Not Use It
-
-While technically promising, the asynchronous version faced several **fault tolerance limitations**, such as:
-
-- Complex compensation logic across asynchronous boundaries
-- Message loss during service crashes
-- Difficulties with exactly-once guarantees and recovery
-
-Despite our efforts, these trade-offs made the async version less stable than our synchronous choreography model, so we chose **not to use it as our final submission**.
-
-Still, feel free to test it — it’s a great example of a more reactive architecture, and we invested many hours trying to make it work.
