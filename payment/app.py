@@ -78,12 +78,12 @@ async def wait_for_redis(max_attempts=30, delay=1):
     for attempt in range(max_attempts):
         try:
             await db.ping()
-            app.logger.info("Redis connection established")
+            # app.logger.info("Redis connection established")
             return True
         except (redis.exceptions.ConnectionError, redis.exceptions.RedisError) as e:
-            app.logger.warning(
-                f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
-            )
+            # app.logger.warning(
+            #     f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
+            # )
             await asyncio.sleep(delay)
 
     app.logger.error(f"Redis connection failed after {max_attempts} attempts")
@@ -140,18 +140,26 @@ async def on_start():
 
 @app.post("/create_user")
 async def create_user():
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
     key = str(uuid.uuid4())
     value = msgpack.encode(UserValue(credit=0))
     try:
         log({key: value})
         await db.set(key, value)
-    except redis.exceptions.RedisError:
+    except redis.exceptions.RedisError as e:
+        app.logger.error(e)
         return abort(400, DB_ERROR_STR)
     return jsonify({"user_id": key})
 
 
 @app.post("/batch_init/<int:n>/<int:starting_money>")
 async def batch_init_users(n: int, starting_money: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     kv_pairs: dict[str, bytes] = {
         f"{i}": msgpack.encode(UserValue(credit=starting_money)) for i in range(n)
     }
@@ -165,12 +173,20 @@ async def batch_init_users(n: int, starting_money: int):
 
 @app.get("/find_user/<user_id>")
 async def find_user(user_id: str):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     user_entry: UserValue = await get_user_from_db(user_id)
     return jsonify({"user_id": user_id, "credit": user_entry.credit})
 
 
 @app.post("/add_funds/<user_id>/<int:amount>")
 async def add_credit(user_id: str, amount: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     user_entry: UserValue = await get_user_from_db(user_id)
     user_entry.credit += amount
     value = msgpack.encode(user_entry)
@@ -186,6 +202,9 @@ async def add_credit(user_id: str, amount: int):
 
 @app.post("/pay/<user_id>/<int:amount>")
 async def pay(user_id: str, amount: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
     """
     Based on:
         Pipelines and transactions. (n.d.). Redis Docs. https://redis.io/docs/latest/develop/clients/redis-py/transpipe/

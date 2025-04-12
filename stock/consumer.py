@@ -206,20 +206,27 @@ class StockConsumer:
             await self.send_stock_failure_event(order_id, user_id, total_amount)
 
     async def send_stock_processed_event(self, order_id):
+        from app import app
+
         event_data = {
             "message_id": str(uuid.uuid4()),
             "order_id": order_id,
             "status": "SUCCESS",
         }
+
+        # app.logger.info(f"Stock processed for order {order_id}")
         await self.producer.send_message("stock.order.processed", event_data)
 
     async def send_stock_failure_event(self, order_id, user_id, total_amount):
+        from app import app
+
         event_data = {
             "message_id": str(uuid.uuid4()),
             "order_id": order_id,
             "total_amount": total_amount,
             "user_id": user_id,
         }
+        # app.logger.info(f"Stock rollback message sent for order {order_id}")
         await self.producer.send_message("stock.payment.rollback", event_data)
 
     async def close(self):

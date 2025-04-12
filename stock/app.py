@@ -46,12 +46,12 @@ async def wait_for_redis(max_attempts=30, delay=1):
     for attempt in range(max_attempts):
         try:
             await db.ping()
-            app.logger.info("Redis connection established")
+            # app.logger.info("Redis connection established")
             return True
         except (redis.exceptions.ConnectionError, redis.exceptions.RedisError) as e:
-            app.logger.warning(
-                f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
-            )
+            # app.logger.warning(
+            #     f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
+            # )
             await asyncio.sleep(delay)
 
     app.logger.error(f"Redis connection failed after {max_attempts} attempts")
@@ -127,6 +127,10 @@ async def on_start():
 
 @app.post("/item/create/<int:price>")
 async def create_item(price: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     """Create a new stock item."""
     key = str(uuid.uuid4())
     app.logger.debug(f"Item: {key} created")
@@ -141,6 +145,10 @@ async def create_item(price: int):
 
 @app.post("/batch_init/<int:n>/<int:starting_stock>/<int:item_price>")
 async def batch_init_users(n: int, starting_stock: int, item_price: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     """Initialize multiple stock items in batch."""
     kv_pairs: dict[str, bytes] = {
         f"{i}": msgpack.encode(StockValue(stock=starting_stock, price=item_price))
@@ -156,6 +164,10 @@ async def batch_init_users(n: int, starting_stock: int, item_price: int):
 
 @app.get("/find/<item_id>")
 async def find_item(item_id: str):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     """Find a specific item by its ID."""
     item_entry: StockValue = await get_item_from_db(item_id)
     return jsonify({"stock": item_entry.stock, "price": item_entry.price})
@@ -163,6 +175,10 @@ async def find_item(item_id: str):
 
 @app.post("/add/<item_id>/<int:amount>")
 async def add_stock(item_id: str, amount: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     """Add stock to an item."""
     item_entry: StockValue = await get_item_from_db(item_id)
     item_entry.stock += amount
@@ -177,6 +193,10 @@ async def add_stock(item_id: str, amount: int):
 
 @app.post("/subtract/<item_id>/<int:amount>")
 async def remove_stock(item_id: str, amount: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     """Remove stock from an item with a transaction."""
     try:
         async with db.pipeline() as pipe:

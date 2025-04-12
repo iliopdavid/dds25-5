@@ -84,12 +84,12 @@ async def wait_for_redis(max_attempts=30, delay=1):
     for attempt in range(max_attempts):
         try:
             await db.ping()
-            app.logger.info("Redis connection established")
+            # app.logger.info("Redis connection established")
             return True
         except (redis.exceptions.ConnectionError, redis.exceptions.RedisError) as e:
-            app.logger.warning(
-                f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
-            )
+            # app.logger.warning(
+            #     f"Redis not available, attempt {attempt+1}/{max_attempts}: {e}"
+            # )
             await asyncio.sleep(delay)
 
     app.logger.error(f"Redis connection failed after {max_attempts} attempts")
@@ -182,6 +182,10 @@ async def trigger_log_recovery():
 
 @app.post("/create/<user_id>")
 async def create_order(user_id: str):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     key = str(uuid.uuid4())
     value = msgpack.encode(
         OrderValue(paid=False, items={}, user_id=user_id, total_cost=0)
@@ -196,6 +200,10 @@ async def create_order(user_id: str):
 
 @app.post("/batch_init/<int:n>/<int:n_items>/<int:n_users>/<int:item_price>")
 async def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     def generate_entry() -> OrderValue:
         user_id = random.randint(0, n_users - 1)
         item1_id = random.randint(0, n_items - 1)
@@ -218,6 +226,10 @@ async def batch_init_users(n: int, n_items: int, n_users: int, item_price: int):
 
 @app.get("/find/<order_id>")
 async def find_order(order_id: str):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     order_entry = await get_order_from_db(order_id)
     return jsonify(
         {
@@ -242,6 +254,10 @@ async def send_get_request(url: str):
 
 @app.post("/addItem/<order_id>/<item_id>/<int:quantity>")
 async def add_item(order_id: str, item_id: str, quantity: int):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     order_entry = await get_order_from_db(order_id)
     item_reply = await send_get_request(f"{GATEWAY_URL}/stock/find/{item_id}")
     if item_reply.status != 200:
@@ -266,6 +282,10 @@ async def add_item(order_id: str, item_id: str, quantity: int):
 
 @app.post("/checkout/<order_id>")
 async def checkout(order_id: str):
+    if not await wait_for_redis():
+        app.logger.error("Redis connection failed")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
     pubsub = None
     channel_name = f"checkout-response:{order_id}"
 
@@ -306,7 +326,7 @@ async def checkout(order_id: str):
                         200,
                     )
                 else:
-                    app.logger.warning(f"Checkout failed checkout for order {order_id}")
+                    app.logger.info(f"Checkout failed checkout for order {order_id}")
                     return (
                         jsonify(
                             {

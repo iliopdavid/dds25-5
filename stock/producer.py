@@ -57,7 +57,7 @@ class StockProducer:
                 routing_key=routing_key,
             )
 
-            app.logger.debug(
+            app.logger.info(
                 f"Message sent to exchange 'stock.exchange' with key '{routing_key}': {message_body}"
             )
         except Exception as e:

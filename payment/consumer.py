@@ -149,10 +149,9 @@ class PaymentConsumer:
         user_id = payment_data.get("user_id")
         amount = payment_data.get("total_amount")
         items = payment_data.get("items")
-        total_amount = payment_data.get("total_amount")
 
         if not all([order_id, user_id, amount, items]):
-            app.logger.error("Missing required payment data")
+            app.logger.error(f"Missing required payment data: {payment_data}")
             return {"status": "FAILURE", "reason": "invalid_data"}
 
         try:
@@ -189,7 +188,9 @@ class PaymentConsumer:
                 result = result.decode("utf-8")
 
             if result == "success":
-                app.logger.debug(f"Credit for user {user_id} reduced by {amount}.")
+                app.logger.info(
+                    f"Credit for user {user_id} successfully reduced by {amount}."
+                )
 
                 # ADDED
                 user_bytes = await self.redis_client.get(str(user_id))
@@ -197,7 +198,7 @@ class PaymentConsumer:
                     log({user_id: user_bytes})
 
                 await self.send_payment_processed_event(
-                    order_id, items, total_amount, user_id
+                    order_id, items, amount, user_id
                 )
                 return {"status": "SUCCESS"}
             else:
