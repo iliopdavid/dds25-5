@@ -11,4 +11,11 @@ We explored an **asynchronous, event-driven saga** using a fully decoupled messa
 - Checkout responses are handled asynchronously using a pub/sub mechanism
 - Lua script for atomic database transactions
 
+### Workflow 
+- The Order Service sends a checkout event to the Payment Service.
+- The Payment Service deducts the total cost from the user's credit. If successful, it triggers an event to the Stock Service for inventory processing.
+- The Stock Service attempts to deduct stock for all items. If any item has insufficient stock, it rolls back all stock changes and sends a rollback event to the Payment Service, which then restores the user's credit.
+- If all operations succeed, the Stock Service sends a success event back to the Order Service, confirming the checkout was completed successfully.
+
+
 When running docker-compose, please wait a moment to allow the producer and consumer to initialize properly. 
