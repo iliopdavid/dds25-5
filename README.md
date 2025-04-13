@@ -1,8 +1,8 @@
 # Team 5 Distributed Data Assignment 2025  
 
-Please note that we have implemented two different approaches: one using the synchronous Saga pattern and the other following an asynchronous event-driven architecture.
+We have implemented two different approaches: one using the synchronous Saga pattern and the other following an asynchronous event-driven architecture.
 
-We would greatly appreciate it if you could review both implementations, as each provides fault tolerance while ensuring consistency.
+We would greatly appreciate it if you could also check out the event-driven implementation briefly, as it also provides fault tolerance while ensuring consistency. Main difference is that logging is better implemented for the checkout workflow in this branch, and therefore we are using it as main but the event-driven approach has a slightly better RPS. 
 
 The event-driven approach is implemented in [rabbitmq-final branch](https://github.com/iliopdavid/dds25-5/tree/rabbitmq-final)
 
