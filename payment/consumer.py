@@ -192,10 +192,10 @@ class PaymentConsumer:
                     f"Credit for user {user_id} successfully reduced by {amount}."
                 )
 
-                # ADDED
-                user_bytes = await self.redis_client.get(str(user_id))
-                if user_bytes:
-                    log({user_id: user_bytes})
+                # # ADDED
+                # user_bytes = await self.redis_client.get(str(user_id))
+                # if user_bytes:
+                #     log({user_id: user_bytes})
 
                 await self.send_payment_processed_event(
                     order_id, items, amount, user_id
@@ -266,10 +266,10 @@ class PaymentConsumer:
                 app.logger.info(
                     f"Credit rollback successful for user {user_id}, order {order_id}. Amount: {amount}"
                 )
-                # ADDED
-                user_bytes = await self.redis_client.get(str(user_id))
-                if user_bytes:
-                    log({user_id: user_bytes})
+                # # ADDED
+                # user_bytes = await self.redis_client.get(str(user_id))
+                # if user_bytes:
+                #     log({user_id: user_bytes})
 
                 await self.producer.send_message(
                     "payment.order.rollbacked",

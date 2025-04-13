@@ -301,7 +301,7 @@ async def checkout(order_id: str):
         )
         message = None
         try:
-            message = await wait_for_response(pubsub, channel_name, timeout=10.0)
+            message = await wait_for_response(pubsub, channel_name, timeout=20.0)
         except asyncio.TimeoutError:
             app.logger.warning(
                 f"Timeout waiting for response on {channel_name} for order {order_id}"
@@ -326,7 +326,9 @@ async def checkout(order_id: str):
                         200,
                     )
                 else:
-                    app.logger.info(f"Checkout failed checkout for order {order_id}")
+                    app.logger.info(
+                        f"Checkout failed checkout for order due to insufficient stock/credit {order_id}"
+                    )
                     return (
                         jsonify(
                             {
