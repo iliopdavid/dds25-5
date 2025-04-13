@@ -6,26 +6,22 @@ We would greatly appreciate it if you could also check out the event-driven impl
 
 The event-driven approach is implemented in [rabbitmq-final branch](https://github.com/iliopdavid/dds25-5/tree/rabbitmq-final)
 
-## Saga Workflow and Choreography Logic
+## Saga Workflow and Orchestration
 
-This repository contains our primary implementation of a distributed checkout system using the **Saga pattern** with **synchronous choreography**.
+This repository contains our primary implementation of a distributed checkout system using the **Saga pattern** with **orchestration**.
 
-### Key Components
-
-- Implemented the entire saga flow in **order-service**, which:
-  - Initiates stock subtraction (**stock-service**)
-  - Initiates payment deduction (**payment-service**)
-  - Finalizes the order upon success
-  - Performs **compensation** in case of failure (refund payment or restore stock)
-
-- Followed a **choreography-based pattern**: Services coordinate through **direct HTTP requests**, not a central orchestrator.
-
-- Workflow is **synchronous and request-driven** (not event-based), which keeps the flow **deterministic** and easier to debug.
-
-- Leveraged **Redis pipelines** and **optimistic locking** (`WATCH` / `MULTI` / `EXEC`) in `stock-service` and `payment-service` to:
-  - Prevent **race conditions** in concurrent updates
-  - Ensure **atomicity** and **consistency** in high-concurrency scenarios
-  - Support **safe retries** when conflicts are detected
+**Key Components**
+* Implemented a central orchestrator in the **order-service**, which:
+   * Initiates stock subtraction (**stock-service**)
+   * Initiates payment deduction (**payment-service**)
+   * Finalizes the order upon success
+   * Performs **compensation** in case of failure (refund payment or restore stock)
+* Followed an **orchestration-based pattern**: The order service directly coordinates the workflow through **synchronous HTTP requests**.
+* Workflow is **synchronous and request-driven**, which keeps the flow **deterministic** and easier to debug.
+* Leveraged **Redis pipelines** and **optimistic locking** (`WATCH` / `MULTI` / `EXEC`) in `stock-service` and `payment-service` to:
+   * Prevent **race conditions** in concurrent updates
+   * Ensure **atomicity** and **consistency** in high-concurrency scenarios
+   * Support **safe retries** when conflicts are detected
 
 ---
 
